@@ -11,6 +11,7 @@ import {
   Code2, AlertCircle, Sparkles, ChevronDown
 } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
+import { fetchAllPages } from '../lib/api';
 
 export default function GitRepositoryPage() {
   const { token, user } = useAuth();
@@ -86,15 +87,10 @@ export default function GitRepositoryPage() {
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const res = await fetch('/api/projects', {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setProjects(data);
-          if (data.length > 0 && !selectedProjectId) {
-            setSelectedProjectId(data[0].id);
-          }
+        const data = await fetchAllPages<Project>('/api/projects');
+        setProjects(data);
+        if (data.length > 0 && !selectedProjectId) {
+          setSelectedProjectId(data[0].id);
         }
       } catch (err) {
         console.error("Failed to load projects:", err);
@@ -150,12 +146,8 @@ export default function GitRepositoryPage() {
   const fetchTasks = async () => {
     if (!selectedProjectId) return;
     try {
-      const res = await fetch(`/api/tasks?projectId=${selectedProjectId}`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setTasks(await res.json());
-      }
+      const data = await fetchAllPages<Task>(`/api/tasks?projectId=${selectedProjectId}`);
+      setTasks(data);
     } catch (err) {
       console.error("Failed to fetch project tasks:", err);
     }

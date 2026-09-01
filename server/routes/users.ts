@@ -12,6 +12,7 @@ import {
   parseJsonField,
   sanitizeAndValidatePermissions,
 } from "../rbac.ts";
+import { buildPageInfo, parsePageParams, sendPaginated } from "../pagination.ts";
 
 function auth(req: any, res: any, next: any) {
   return R().authenticateToken(req, res, next);
@@ -123,26 +124,42 @@ router.get("/api/search", auth, async (req: any, res: any) => {
   const searchTerm = `%${query.toLowerCase()}%`;
   const db = await R().getDb();
 
+  const searchLimit = R().config.pagination.searchResultLimit;
+
   try {
     let projects;
     let tasks;
     let documents;
 
     if (isAdminOrSuperAdmin(req.user)) {
-      projects = await db.all("SELECT id, name as title, description, 'project' as type FROM projects WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ?", [searchTerm, searchTerm]);
-      tasks = await db.all("SELECT id, title, description, 'task' as type, projectId FROM tasks WHERE LOWER(title) LIKE ? OR LOWER(description) LIKE ?", [searchTerm, searchTerm]);
-      documents = await db.all("SELECT id, title, 'document' as type, projectId FROM documents WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ?", [searchTerm, searchTerm]);
+      projects = await db.all(
+        "SELECT id, name as title, description, 'project' as type FROM projects WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ? LIMIT ?",
+        [searchTerm, searchTerm, searchLimit]
+      );
+      tasks = await db.all(
+        "SELECT id, title, description, 'task' as type, projectId FROM tasks WHERE LOWER(title) LIKE ? OR LOWER(description) LIKE ? LIMIT ?",
+        [searchTerm, searchTerm, searchLimit]
+      );
+      documents = await db.all(
+        "SELECT id, title, 'document' as type, projectId FROM documents WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ? LIMIT ?",
+        [searchTerm, searchTerm, searchLimit]
+      );
     } else {
-      projects = await db.all(`
+      projects = await db.all(
+        `
         SELECT DISTINCT p.id, p.name as title, p.description, 'project' as type 
         FROM projects p
         LEFT JOIN project_members pm ON p.id = pm.projectId
         LEFT JOIN team_projects tp ON p.id = tp.projectId
         LEFT JOIN team_members tm ON tp.teamId = tm.teamId
         WHERE (p.ownerId = ? OR pm.userId = ? OR tm.userId = ?) AND (LOWER(p.name) LIKE ? OR LOWER(p.description) LIKE ?)
-      `, [userId, userId, userId, searchTerm, searchTerm]);
+        LIMIT ?
+      `,
+        [userId, userId, userId, searchTerm, searchTerm, searchLimit]
+      );
 
-      tasks = await db.all(`
+      tasks = await db.all(
+        `
         SELECT DISTINCT t.id, t.title, t.description, 'task' as type, t.projectId
         FROM tasks t
         LEFT JOIN projects p ON t.projectId = p.id
@@ -151,9 +168,13 @@ router.get("/api/search", auth, async (req: any, res: any) => {
         LEFT JOIN team_members tm ON tp.teamId = tm.teamId
         WHERE (p.ownerId = ? OR pm.userId = ? OR tm.userId = ? OR t.creatorId = ? OR t.assigneeId = ?) 
         AND (LOWER(t.title) LIKE ? OR LOWER(t.description) LIKE ?)
-      `, [userId, userId, userId, userId, userId, searchTerm, searchTerm]);
+        LIMIT ?
+      `,
+        [userId, userId, userId, userId, userId, searchTerm, searchTerm, searchLimit]
+      );
 
-      documents = await db.all(`
+      documents = await db.all(
+        `
         SELECT DISTINCT d.id, d.title, 'document' as type, d.projectId
         FROM documents d
         LEFT JOIN projects p ON d.projectId = p.id
@@ -162,16 +183,23 @@ router.get("/api/search", auth, async (req: any, res: any) => {
         LEFT JOIN team_members tm ON tp.teamId = tm.teamId
         WHERE (p.ownerId = ? OR pm.userId = ? OR tm.userId = ? OR d.authorId = ?) 
         AND (LOWER(d.title) LIKE ? OR LOWER(d.content) LIKE ?)
-      `, [userId, userId, userId, userId, searchTerm, searchTerm]);
+        LIMIT ?
+      `,
+        [userId, userId, userId, userId, searchTerm, searchTerm, searchLimit]
+      );
     }
 
     let users: any[] = [];
     if (userRole === 'admin' || userRole === 'super_admin') {
-      users = await db.all(`
+      users = await db.all(
+        `
         SELECT id, name as title, email as description, 'user' as type
         FROM users
         WHERE LOWER(name) LIKE ? OR LOWER(email) LIKE ?
-      `, [searchTerm, searchTerm]);
+        LIMIT ?
+      `,
+        [searchTerm, searchTerm, searchLimit]
+      );
     }
 
     res.json({ projects, tasks, documents, users });
@@ -183,44 +211,76 @@ router.get("/api/search", auth, async (req: any, res: any) => {
 // Get Users (for assigning tasks and team directories)
 router.get("/api/users", auth, async (req: any, res: any) => {
   const db = await R().getDb();
+  const { page, pageSize, offset } = parsePageParams(req.query, R().config.pagination);
   const canSeeAll = isAdminOrSuperAdmin(req.user) || await canManageUsers(req.user);
   
   if (canSeeAll) {
-    const users = await db.all("SELECT id, name, email, role, skills, rolePrefix, status FROM users");
-    return res.json(users.map((u: any) => ({ ...u, skills: parseJsonField(u.skills, []), rolePrefix: u.rolePrefix || "", status: u.status || "Available" })));
+    const countRow = await db.get<{ count: number | string }>("SELECT COUNT(*) as count FROM users");
+    const total = Number(countRow?.count || 0);
+    const users = await db.all(
+      "SELECT id, name, email, role, skills, rolePrefix, status FROM users ORDER BY name ASC LIMIT ? OFFSET ?",
+      [pageSize, offset]
+    );
+    return sendPaginated(
+      res,
+      users.map((u: any) => ({ ...u, skills: parseJsonField(u.skills, []), rolePrefix: u.rolePrefix || "", status: u.status || "Available" })),
+      buildPageInfo(total, page, pageSize)
+    );
   }
 
-  // Non-admins only get peers who share projects/teams with them (and self), preventing stranger enumeration
-  const users = await db.all(`
+  const peerSubquery = `
+    SELECT ? as peerId
+    UNION
+    SELECT pm_peer.userId as peerId
+    FROM project_members pm_my
+    JOIN project_members pm_peer ON pm_peer.projectId = pm_my.projectId
+    WHERE pm_my.userId = ?
+    UNION
+    SELECT p.ownerId as peerId
+    FROM project_members pm_my
+    JOIN projects p ON p.id = pm_my.projectId
+    WHERE pm_my.userId = ?
+    UNION
+    SELECT pm.userId as peerId
+    FROM projects p
+    JOIN project_members pm ON pm.projectId = p.id
+    WHERE p.ownerId = ?
+    UNION
+    SELECT tm_peer.userId as peerId
+    FROM team_members tm_my
+    JOIN team_members tm_peer ON tm_peer.teamId = tm_my.teamId
+    WHERE tm_my.userId = ?
+  `;
+  const peerParams = [req.user.id, req.user.id, req.user.id, req.user.id, req.user.id];
+
+  const countRow = await db.get<{ count: number | string }>(
+    `
+    SELECT COUNT(DISTINCT u.id) as count
+    FROM users u
+    JOIN (${peerSubquery}) peers ON peers.peerId = u.id
+    WHERE u.status IS NULL OR (LOWER(u.status) != 'disabled' AND LOWER(u.status) != 'inactive' AND LOWER(u.status) != 'suspended')
+  `,
+    peerParams
+  );
+  const total = Number(countRow?.count || 0);
+
+  const users = await db.all(
+    `
     SELECT DISTINCT u.id, u.name, u.role, u.skills, u.rolePrefix, u.status, u.email
     FROM users u
-    JOIN (
-      SELECT ? as peerId
-      UNION
-      SELECT pm_peer.userId as peerId
-      FROM project_members pm_my
-      JOIN project_members pm_peer ON pm_peer.projectId = pm_my.projectId
-      WHERE pm_my.userId = ?
-      UNION
-      SELECT p.ownerId as peerId
-      FROM project_members pm_my
-      JOIN projects p ON p.id = pm_my.projectId
-      WHERE pm_my.userId = ?
-      UNION
-      SELECT pm.userId as peerId
-      FROM projects p
-      JOIN project_members pm ON pm.projectId = p.id
-      WHERE p.ownerId = ?
-      UNION
-      SELECT tm_peer.userId as peerId
-      FROM team_members tm_my
-      JOIN team_members tm_peer ON tm_peer.teamId = tm_my.teamId
-      WHERE tm_my.userId = ?
-    ) peers ON peers.peerId = u.id
+    JOIN (${peerSubquery}) peers ON peers.peerId = u.id
     WHERE u.status IS NULL OR (LOWER(u.status) != 'disabled' AND LOWER(u.status) != 'inactive' AND LOWER(u.status) != 'suspended')
-  `, [req.user.id, req.user.id, req.user.id, req.user.id, req.user.id]);
+    ORDER BY u.name ASC
+    LIMIT ? OFFSET ?
+  `,
+    [...peerParams, pageSize, offset]
+  );
   
-  res.json(users.map((u: any) => ({ ...u, skills: parseJsonField(u.skills, []), rolePrefix: u.rolePrefix || "", status: u.status || "Available" })));
+  sendPaginated(
+    res,
+    users.map((u: any) => ({ ...u, skills: parseJsonField(u.skills, []), rolePrefix: u.rolePrefix || "", status: u.status || "Available" })),
+    buildPageInfo(total, page, pageSize)
+  );
 });
 
 // Admin create user

@@ -14,6 +14,7 @@ import ProjectGitModal from '../components/ProjectGitModal';
 import Markdown from 'react-markdown';
 import { exportToCSV, exportToJSON } from '../lib/export';
 import { EmptyState } from '../components/EmptyState';
+import { fetchAllPages } from '../lib/api';
 import { Tooltip } from '../components/Tooltip';
 
 export default function Projects() {
@@ -54,18 +55,12 @@ export default function Projects() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch('/api/projects', {
-        headers: { }
-      });
-      if (res.ok) {
-        setProjects(await res.json());
-      }
-      const usersRes = await fetch('/api/users', {
-        headers: { }
-      });
-      if (usersRes.ok) {
-        setUsers(await usersRes.json());
-      }
+      const [projectsData, usersData] = await Promise.all([
+        fetchAllPages<Project>('/api/projects'),
+        fetchAllPages<User>('/api/users'),
+      ]);
+      setProjects(projectsData);
+      setUsers(usersData);
     } catch (err) {
       console.error(err);
     } finally {

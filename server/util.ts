@@ -149,8 +149,7 @@ export async function mapPrStatusToBoardColumn(
   projectId: string,
   currentStatus: string,
   remotePrStatus: string
-): Promise<string> {
-  let nextTaskStatus = currentStatus;
+): Promise<string | null> {
   const colRow = await db.get<{ columnsJson?: string }>("SELECT columnsJson FROM project_columns WHERE projectId = ?", projectId);
   let columnIds: string[] = [];
   if (colRow?.columnsJson) {
@@ -164,19 +163,28 @@ export async function mapPrStatusToBoardColumn(
     }
   }
 
-  if (remotePrStatus === "merged" && currentStatus !== "done") {
-    if (columnIds.length === 0 || columnIds.includes("done")) {
-      nextTaskStatus = "done";
-    } else {
-      nextTaskStatus = columnIds[columnIds.length - 1];
-    }
-  } else if (remotePrStatus === "open" && (currentStatus === "todo" || currentStatus === "backlog")) {
-    if (columnIds.length === 0 || columnIds.includes("review")) {
-      nextTaskStatus = "review";
-    } else {
-      const reviewLike = columnIds.find((id) => /review/i.test(id));
-      if (reviewLike) nextTaskStatus = reviewLike;
-    }
+  if (columnIds.length === 0) {
+    return null;
   }
-  return nextTaskStatus;
+
+  if (remotePrStatus === "merged") {
+    const target = columnIds[columnIds.length - 1];
+    return target === currentStatus ? null : target;
+  }
+
+  if (remotePrStatus === "open" && (currentStatus === "todo" || currentStatus === "backlog")) {
+    const reviewCol = columnIds.find((id) => /review/i.test(id));
+    if (!reviewCol) return null;
+    return reviewCol === currentStatus ? null : reviewCol;
+  }
+
+  return null;
+}
+
+export function sanitizeGitProviderError(err: unknown): string {
+  const message = String((err as { message?: string })?.message || err || "Git provider request failed");
+  if (message.length > 200 || /<!DOCTYPE|<html|\{"/i.test(message)) {
+    return "Git provider request failed. Check server logs for details.";
+  }
+  return message;
 }

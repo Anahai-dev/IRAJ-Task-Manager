@@ -63,22 +63,24 @@ async function runBackgroundPrSync(getDb: () => Promise<DatabaseWrapper>, decryp
               String(task.status),
               remotePrStatus
             );
-            await db.run("UPDATE tasks SET prStatus = ?, status = ? WHERE id = ?", [
-              remotePrStatus,
-              nextTaskStatus,
-              task.id,
-            ]);
+            if (nextTaskStatus !== null) {
+              await db.run("UPDATE tasks SET prStatus = ?, status = ? WHERE id = ?", [
+                remotePrStatus,
+                nextTaskStatus,
+                task.id,
+              ]);
+            } else {
+              await db.run("UPDATE tasks SET prStatus = ? WHERE id = ?", [remotePrStatus, task.id]);
+            }
+            const statusNote =
+              nextTaskStatus !== null
+                ? `updated PR to '${remotePrStatus}' and Board Status to '${nextTaskStatus}'`
+                : `updated PR to '${remotePrStatus}' (board status unchanged — no mapped column)`;
             await db.run(
               "INSERT INTO task_activities (id, taskId, userId, action, createdAt) VALUES (?, ?, ?, ?, ?)",
-              [
-                uuidv4(),
-                task.id,
-                "system",
-                `automatically synchronized PR status: updated PR to '${remotePrStatus}' and Board Status to '${nextTaskStatus}'`,
-                new Date().toISOString(),
-              ]
+              [uuidv4(), task.id, "system", `automatically synchronized PR status: ${statusNote}`, new Date().toISOString()]
             );
-            console.log(`[Background Sync] Updated task "${task.title}" to ${nextTaskStatus} (PR ${remotePrStatus})`);
+            console.log(`[Background Sync] Updated task "${task.title}" (${statusNote})`);
           }
         } catch (taskErr: unknown) {
           console.error(`[Background Sync] Error syncing task ${task.id}:`, (taskErr as Error).message);

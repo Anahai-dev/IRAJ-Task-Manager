@@ -9,6 +9,7 @@ import { useSearchParams, Link, Navigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
 import Markdown from 'react-markdown';
 
+import { fetchAllPages } from '../lib/api';
 import { Column, DEFAULT_COLUMNS } from './Board';
 
 type SortOption = 'custom' | 'priority' | 'deadline' | 'createdAt';
@@ -52,15 +53,11 @@ export default function Graph() {
   const fetchData = async () => {
     if (!token) return;
     try {
-      const results = await Promise.all([
-        fetch('/api/tasks', { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch('/api/projects', { headers: { } })
+      const [tasksData, usersData, projectsData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
       ]);
-      
-      const tasksData: Task[] = await results[0].json();
-      const usersData = await results[1].json();
-      const projectsData: Project[] = await results[2].json();
       
       setAllProjects(projectsData);
       

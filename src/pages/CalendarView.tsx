@@ -20,6 +20,7 @@ import {
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, CheckCircle2, Plus, FolderKanban } from 'lucide-react';
 import { cn } from '../lib/utils';
 import TaskModal from '../components/TaskModal';
+import { fetchAllPages } from '../lib/api';
 import { Tooltip } from '../components/Tooltip';
 
 export default function CalendarView() {
@@ -41,14 +42,11 @@ export default function CalendarView() {
 
   const fetchData = async () => {
     try {
-      const [tasksRes, usersRes, projectsRes] = await Promise.all([
-        fetch('/api/tasks', { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch('/api/projects', { headers: { } })
+      const [tasksData, usersData, projectsData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
       ]);
-      const tasksData = await tasksRes.json();
-      const usersData = await usersRes.json();
-      const projectsData = await projectsRes.json();
       
       setUsers(usersData);
       setAllProjects(projectsData);

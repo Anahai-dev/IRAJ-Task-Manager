@@ -17,7 +17,7 @@ import Markdown from 'react-markdown';
 import UserAvatar from '../components/UserAvatar';
 import { exportToCSV, exportToJSON } from '../lib/export';
 import { HelpIcon, Tooltip } from '../components/Tooltip';
-import { EmptyState } from '../components/EmptyState';
+import { fetchAllPages } from '../lib/api';
 
 export interface Column {
   id: string;
@@ -206,17 +206,12 @@ export default function Board() {
 
   const fetchData = async () => {
     try {
-      const results = await Promise.all([
-        fetch('/api/tasks', { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch('/api/projects', { headers: { } }),
-        fetch('/api/milestones', { headers: { } })
+      const [tasksData, usersData, projectsData, milestonesData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
+        fetchAllPages<Milestone>('/api/milestones'),
       ]);
-      
-      const tasksData: Task[] = await results[0].json();
-      const usersData = await results[1].json();
-      const projectsData: Project[] = await results[2].json();
-      const milestonesData: Milestone[] = await results[3].json();
       
       setAllProjects(projectsData);
       setMilestones(milestonesData);

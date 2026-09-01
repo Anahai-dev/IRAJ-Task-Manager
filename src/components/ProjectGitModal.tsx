@@ -8,6 +8,7 @@ import {
   ExternalLink, Plus, RefreshCw, CheckCircle2, GitPullRequest, 
   Copy, Check, Shield, AlertCircle, Key, Layers, Terminal
 } from 'lucide-react';
+import { fetchAllPages } from '../lib/api';
 
 interface ProjectGitModalProps {
   project: Project;
@@ -64,12 +65,8 @@ export default function ProjectGitModal({ project, onClose, onUpdateProject }: P
 
   const fetchTasks = async () => {
     try {
-      const res = await fetch(`/api/tasks?projectId=${project.id}`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setTasks(await res.json());
-      }
+      const data = await fetchAllPages<Task>(`/api/tasks?projectId=${project.id}`);
+      setTasks(data);
     } catch (err) {
       console.error("Failed to fetch project tasks:", err);
     }

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { asyncHandler } from "../middleware/asyncHandler.ts";
 import { R } from "../runtime.ts";
 import { canContributeToProject, canManageProject, checkProjectAccess, isAdminOrSuperAdmin } from "../rbac.ts";
+import { buildPageInfo, parsePageParams, sendPaginated } from "../pagination.ts";
 
 function auth(req: any, res: any, next: any) {
   return R().authenticateToken(req, res, next);
@@ -16,13 +17,17 @@ export function milestonesRouter(): Router {
     auth,
     asyncHandler(async (req, res) => {
       const db = await R().getDb();
+      const { page, pageSize, offset } = parsePageParams(req.query, R().config.pagination);
       let milestones;
+      let total = 0;
       if (isAdminOrSuperAdmin(req.user)) {
-        milestones = await db.all("SELECT * FROM milestones");
+        const countRow = await db.get<{ count: number | string }>("SELECT COUNT(*) as count FROM milestones");
+        total = Number(countRow?.count || 0);
+        milestones = await db.all("SELECT * FROM milestones ORDER BY createdAt DESC LIMIT ? OFFSET ?", [pageSize, offset]);
       } else {
-        milestones = await db.all(
+        const countRow = await db.get<{ count: number | string }>(
           `
-      SELECT DISTINCT m.*
+      SELECT COUNT(DISTINCT m.id) as count
       FROM milestones m
       LEFT JOIN projects p ON m.projectId = p.id
       LEFT JOIN project_members pm ON p.id = pm.projectId
@@ -32,8 +37,23 @@ export function milestonesRouter(): Router {
     `,
           [req.user!.id, req.user!.id, req.user!.id]
         );
+        total = Number(countRow?.count || 0);
+        milestones = await db.all(
+          `
+      SELECT DISTINCT m.*
+      FROM milestones m
+      LEFT JOIN projects p ON m.projectId = p.id
+      LEFT JOIN project_members pm ON p.id = pm.projectId
+      LEFT JOIN team_projects tp ON p.id = tp.projectId
+      LEFT JOIN team_members tm ON tp.teamId = tm.teamId
+      WHERE p.ownerId = ? OR pm.userId = ? OR tm.userId = ?
+      ORDER BY m.createdAt DESC
+      LIMIT ? OFFSET ?
+    `,
+          [req.user!.id, req.user!.id, req.user!.id, pageSize, offset]
+        );
       }
-      res.json(milestones);
+      sendPaginated(res, milestones, buildPageInfo(total, page, pageSize));
     })
   );
 

@@ -5,6 +5,7 @@ import { User } from '../types';
 import { Shield, UserCog, Plus, Edit2, Trash2, X, Save, ChevronDown } from 'lucide-react';
 import UserModal from '../components/UserModal';
 import UserAvatar from '../components/UserAvatar';
+import { fetchAllPages } from '../lib/api';
 import CustomSelect from '../components/CustomSelect';
 
 export default function UsersAdmin() {
@@ -42,12 +43,8 @@ export default function UsersAdmin() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/users', {
-        headers: { }
-      });
-      if (res.ok) {
-        setUsers(await res.json());
-      }
+      const usersData = await fetchAllPages<User>('/api/users');
+      setUsers(usersData);
     } catch (err) {
       console.error(err);
     }

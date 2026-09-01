@@ -9,6 +9,7 @@ import { cn, getIncrementedBranchName, safeFormatDate } from '../lib/utils';
 import { canDeleteTasks, canEditAllTasks } from '../lib/permissions';
 import UserAvatar from './UserAvatar';
 import CustomSelect from './CustomSelect';
+import { fetchAllPages, unwrapList } from '../lib/api';
 
 interface TaskModalProps {
   task: Task | null;
@@ -54,8 +55,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const [projectsList, setProjectsList] = useState<Project[]>([]);
   
   useEffect(() => {
-    fetch('/api/projects', { headers: { } })
-      .then(res => res.json())
+    fetchAllPages<Project>('/api/projects')
       .then(data => {
         setProjectsList(data);
         if (data.length === 1 && !formData.projectId) {
@@ -70,7 +70,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
       fetch(`/api/projects/${formData.projectId}/milestones`, { headers: { } })
         .then(res => res.json())
         .then(data => {
-          setMilestones(data);
+          setMilestones(unwrapList(data));
         })
         .catch(err => console.error("Error fetching milestones", err));
     } else {

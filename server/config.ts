@@ -89,6 +89,11 @@ export const CONFIG_DEFAULTS = {
     morganDevelopment: "dev",
     level: "info",
   },
+  pagination: {
+    defaultPageSize: 500,
+    maxPageSize: 5000,
+    searchResultLimit: 50,
+  },
 } as const;
 
 export const PLACEHOLDER_DATABASE_URL = "postgres://user:password@localhost:5432/dbname";
@@ -209,6 +214,11 @@ export interface AppConfig {
   readonly logging: {
     readonly morganFormat: string;
     readonly level: string;
+  };
+  readonly pagination: {
+    readonly defaultPageSize: number;
+    readonly maxPageSize: number;
+    readonly searchResultLimit: number;
   };
 }
 
@@ -493,6 +503,11 @@ export function buildConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         env.MORGAN_FORMAT?.trim() ||
         (isProduction ? CONFIG_DEFAULTS.logging.morganProduction : CONFIG_DEFAULTS.logging.morganDevelopment),
       level: env.LOG_LEVEL?.trim() || CONFIG_DEFAULTS.logging.level,
+    },
+    pagination: {
+      defaultPageSize: parseIntEnv("PAGINATION_DEFAULT_PAGE_SIZE", CONFIG_DEFAULTS.pagination.defaultPageSize, env),
+      maxPageSize: parseIntEnv("PAGINATION_MAX_PAGE_SIZE", CONFIG_DEFAULTS.pagination.maxPageSize, env),
+      searchResultLimit: parseIntEnv("PAGINATION_SEARCH_LIMIT", CONFIG_DEFAULTS.pagination.searchResultLimit, env),
     },
   };
 }

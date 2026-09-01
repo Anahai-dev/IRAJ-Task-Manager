@@ -8,6 +8,7 @@ import Markdown from 'react-markdown';
 import UserAvatar from '../components/UserAvatar';
 import SearchableSelect from '../components/SearchableSelect';
 import { EmptyState } from '../components/EmptyState';
+import { fetchAllPages } from '../lib/api';
 
 export default function Teams() {
   const { token, user: currentUser } = useAuth();
@@ -21,10 +22,8 @@ export default function Teams() {
   // Data fetching
   const fetchTeams = async () => {
     try {
-      const pRes = await fetch('/api/projects', { headers: { }});
-      if (pRes.ok) {
-        setProjects(await pRes.json());
-      }
+      const projectsData = await fetchAllPages<Project>('/api/projects');
+      setProjects(projectsData);
       const res = await fetch('/api/teams', {
         headers: { }
       });
@@ -194,8 +193,7 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch('/api/projects', { headers: { } })
-      .then(r => r.json())
+    fetchAllPages<Project>('/api/projects')
       .then(setProjects)
       .catch(console.error);
   }, [token]);
@@ -342,18 +340,18 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [membersRes, usersRes, teamProjectsRes, allProjectsRes] = await Promise.all([
+      const [membersRes, usersData, teamProjectsRes, allProjectsData] = await Promise.all([
         fetch(`/api/teams/${team.id}/members`, { headers: { } }),
-        fetch('/api/users', { headers: { } }),
+        fetchAllPages<User>('/api/users'),
         fetch(`/api/teams/${team.id}/projects`, { headers: { } }),
-        fetch('/api/projects', { headers: { } })
+        fetchAllPages<Project>('/api/projects')
       ]);
       
-      if (membersRes.ok && usersRes.ok && teamProjectsRes.ok && allProjectsRes.ok) {
+      if (membersRes.ok && teamProjectsRes.ok) {
         setMembers(await membersRes.json());
-        setAllUsers(await usersRes.json());
+        setAllUsers(usersData);
         setTeamProjects(await teamProjectsRes.json());
-        setAllProjects(await allProjectsRes.json());
+        setAllProjects(allProjectsData);
       }
     } catch (err) {
       console.error(err);

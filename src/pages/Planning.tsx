@@ -8,6 +8,7 @@ import { safeFormatDate } from '../lib/utils';
 import TaskTimelineD3 from '../components/TaskTimelineD3';
 import TaskModal from '../components/TaskModal';
 import CustomSelect from '../components/CustomSelect';
+import { fetchAllPages } from '../lib/api';
 import { HelpIcon, Tooltip } from '../components/Tooltip';
 
 export default function Planning() {
@@ -51,10 +52,8 @@ export default function Planning() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/users', { headers: { } });
-      if (res.ok) {
-        setUsers(await res.json());
-      }
+      const usersData = await fetchAllPages<User>('/api/users');
+      setUsers(usersData);
     } catch (err) {
       console.error(err);
     }
@@ -62,13 +61,9 @@ export default function Planning() {
 
   const fetchTasks = async () => {
     try {
-      const res = await fetch('/api/tasks', { headers: { } });
-      if (res.ok) {
-        let allTasks = await res.json();
-        // filter by project
-        const projectTasks = allTasks.filter((t: any) => t.projectId === projectId);
-        setTasks(projectTasks);
-      }
+      const allTasks = await fetchAllPages<Task>('/api/tasks');
+      const projectTasks = allTasks.filter((t) => t.projectId === projectId);
+      setTasks(projectTasks);
     } catch (err) {
       console.error(err);
     }
@@ -110,15 +105,10 @@ export default function Planning() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch('/api/projects', {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAllProjects(data);
-        if (projectId) {
-          setProject(data.find((p: Project) => p.id === projectId) || null);
-        }
+      const data = await fetchAllPages<Project>('/api/projects');
+      setAllProjects(data);
+      if (projectId) {
+        setProject(data.find((p) => p.id === projectId) || null);
       }
     } catch (err) {
       console.error(err);

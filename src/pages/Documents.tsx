@@ -7,6 +7,7 @@ import { safeFormatDate } from '../lib/utils';
 import Markdown from 'react-markdown';
 import MDEditor from '@uiw/react-md-editor';
 import { EmptyState } from '../components/EmptyState';
+import { fetchAllPages } from '../lib/api';
 
 export default function Documents() {
   const { token } = useAuth();
@@ -36,15 +37,10 @@ export default function Documents() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch('/api/projects', {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAllProjects(data);
-        if (projectId) {
-          setProject(data.find((p: Project) => p.id === projectId) || null);
-        }
+      const data = await fetchAllPages<Project>('/api/projects');
+      setAllProjects(data);
+      if (projectId) {
+        setProject(data.find((p: Project) => p.id === projectId) || null);
       }
     } catch (err) {
       console.error(err);

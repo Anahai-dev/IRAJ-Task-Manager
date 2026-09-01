@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { Task, User } from '../types';
+import { Task, User, Project } from '../types';
 import { format, isPast, isToday } from 'date-fns';
 import { CheckCircle2, Clock, AlertCircle, FileText, Activity, Edit3, Settings, Eye, EyeOff, ArrowUp, ArrowDown, Layout, Grid, ChevronDown } from 'lucide-react';
 import { Link } from 'react-router';
@@ -16,6 +16,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { fetchAllPages } from '../lib/api';
 
 type WidgetType = 'stats' | 'my_tasks' | 'analytics' | 'my_notes' | 'recent_activity';
 
@@ -236,15 +237,10 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const [tasksRes, usersRes, projectsRes] = await Promise.all([
-        fetch('/api/tasks', { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch('/api/projects', { headers: { } })
-      ]);
       const [tasksData, usersData, projectsData] = await Promise.all([
-        tasksRes.json(),
-        usersRes.json(),
-        projectsRes.json()
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
       ]);
       setTasks(tasksData);
       setUsers(usersData);

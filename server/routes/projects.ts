@@ -8,7 +8,8 @@ import {
   isAdminOrSuperAdmin,
   isProjectAdminOrOwner,
 } from "../rbac.ts";
-import { extractTaskNumber, mapPrStatusToBoardColumn, sanitizeProject } from "../util.ts";
+import { extractTaskNumber, mapPrStatusToBoardColumn, sanitizeProject, sanitizeGitProviderError } from "../util.ts";
+import { buildPageInfo, parsePageParams, sendPaginated } from "../pagination.ts";
 import * as github from "../git/github.ts";
 import * as gitlab from "../git/gitlab.ts";
 
@@ -81,22 +82,41 @@ const sanitizeProject = (project: any) => {
 
 router.get("/api/projects", auth, async (req: any, res: any) => {
   const db = await R().getDb();
+  const { page, pageSize, offset } = parsePageParams(req.query, R().config.pagination);
   let projects;
+  let total = 0;
   if (isAdminOrSuperAdmin(req.user)) {
-    projects = await db.all("SELECT * FROM projects");
+    const countRow = await db.get<{ count: number | string }>("SELECT COUNT(*) as count FROM projects");
+    total = Number(countRow?.count || 0);
+    projects = await db.all("SELECT * FROM projects ORDER BY createdAt DESC LIMIT ? OFFSET ?", [pageSize, offset]);
   } else {
-    projects = await db.all(`
-      SELECT DISTINCT p.* 
-      FROM projects p 
-      LEFT JOIN project_members pm ON p.id = pm.projectId 
-      LEFT JOIN team_projects tp ON p.id = tp.projectId 
-      LEFT JOIN team_members tm ON tp.teamId = tm.teamId 
-      WHERE p.ownerId = ? 
-         OR pm.userId = ? 
+    const countRow = await db.get<{ count: number | string }>(
+      `SELECT COUNT(DISTINCT p.id) as count
+      FROM projects p
+      LEFT JOIN project_members pm ON p.id = pm.projectId
+      LEFT JOIN team_projects tp ON p.id = tp.projectId
+      LEFT JOIN team_members tm ON tp.teamId = tm.teamId
+      WHERE p.ownerId = ? OR pm.userId = ? OR tm.userId = ?`,
+      [req.user.id, req.user.id, req.user.id]
+    );
+    total = Number(countRow?.count || 0);
+    projects = await db.all(
+      `
+      SELECT DISTINCT p.*
+      FROM projects p
+      LEFT JOIN project_members pm ON p.id = pm.projectId
+      LEFT JOIN team_projects tp ON p.id = tp.projectId
+      LEFT JOIN team_members tm ON tp.teamId = tm.teamId
+      WHERE p.ownerId = ?
+         OR pm.userId = ?
          OR tm.userId = ?
-    `, [req.user.id, req.user.id, req.user.id]);
+      ORDER BY p.createdAt DESC
+      LIMIT ? OFFSET ?
+    `,
+      [req.user.id, req.user.id, req.user.id, pageSize, offset]
+    );
   }
-  res.json(projects.map(sanitizeProject));
+  sendPaginated(res, projects.map(sanitizeProject), buildPageInfo(total, page, pageSize));
 });
 
 router.get("/api/projects/:id", auth, async (req: any, res: any) => {
@@ -342,6 +362,7 @@ router.get("/api/projects/:id/git/branches", auth, async (req: any, res: any) =>
     return res.json({ branches, provider, configured: true });
   } catch (err: any) {
     console.error("Git API error:", err.message);
+    const safeError = sanitizeGitProviderError(err);
     // Return graceful fallback with error notice
     const localBranches = Array.from(taskBranchMap.entries()).map(([bName, task]: [string, any]) => ({
       name: bName,
@@ -358,7 +379,7 @@ router.get("/api/projects/:id/git/branches", auth, async (req: any, res: any) =>
       branches: localBranches, 
       provider, 
       configured: true, 
-      error: err.message || "Failed to connect to remote Git provider" 
+      error: safeError 
     });
   }
 });
@@ -494,7 +515,7 @@ router.post("/api/projects/:id/git/branches", auth, async (req: any, res: any) =
       }
     } catch (err: any) {
       console.error("Error creating remote branch:", err.message);
-      remoteError = err.message;
+      remoteError = sanitizeGitProviderError(err);
     }
   }
 
@@ -734,6 +755,9 @@ router.put("/api/projects/:id/columns", auth, async (req: any, res: any) => {
 
 // Sync and Update Statuses of Pull/Merge Requests of a Project
 router.post("/api/projects/:id/git/pull-requests/sync", auth, async (req: any, res: any) => {
+  if (!R().config.git.enabled) {
+    return res.status(403).json({ error: "Git integration is disabled on this server." });
+  }
   const db = await R().getDb();
   if (!(await checkProjectAccess(db, req.params.id, req.user))) {
     return res.status(403).json({ error: "Access denied to project git pull requests." });
@@ -825,23 +849,26 @@ router.post("/api/projects/:id/git/pull-requests/sync", auth, async (req: any, r
           remotePrStatus
         );
 
-        await db.run(
-          "UPDATE tasks SET prStatus = ?, status = ? WHERE id = ?",
-          [remotePrStatus, nextTaskStatus, task.id]
-        );
+        if (nextTaskStatus !== null) {
+          await db.run(
+            "UPDATE tasks SET prStatus = ?, status = ? WHERE id = ?",
+            [remotePrStatus, nextTaskStatus, task.id]
+          );
 
-        // Add activity
-        const activityId = uuidv4();
-        await db.run(
-          "INSERT INTO task_activities (id, taskId, userId, action, createdAt) VALUES (?, ?, ?, ?, ?)",
-          [activityId, task.id, req.user.id, `synchronized PR status: updated PR to '${remotePrStatus}' and Board Status to '${nextTaskStatus}'`, new Date().toISOString()]
-        );
+          const activityId = uuidv4();
+          await db.run(
+            "INSERT INTO task_activities (id, taskId, userId, action, createdAt) VALUES (?, ?, ?, ?, ?)",
+            [activityId, task.id, req.user.id, `synchronized PR status: updated PR to '${remotePrStatus}' and Board Status to '${nextTaskStatus}'`, new Date().toISOString()]
+          );
+        } else {
+          await db.run("UPDATE tasks SET prStatus = ? WHERE id = ?", [remotePrStatus, task.id]);
+        }
 
         updatedCount++;
       }
     } catch (err: any) {
       console.error(`Sync error for task ${task.id}:`, err.message);
-      errors.push(`Failed to sync task ${task.title}: ${err.message}`);
+      errors.push(`Failed to sync task ${task.title}: ${sanitizeGitProviderError(err)}`);
     }
   }
 

@@ -9,6 +9,7 @@ import {
   isProjectAdminOrOwner,
 } from "../rbac.ts";
 import { extractTaskNumber, logActivity, nextTaskCounter } from "../util.ts";
+import { buildPageInfo, parsePageParams, sendPaginated } from "../pagination.ts";
 import type { TaskRow } from "../types.ts";
 type Task = TaskRow;
 
@@ -49,7 +50,21 @@ router.get("/api/tasks", auth, async (req: any, res: any) => {
     query += " WHERE " + conditions.join(" AND ");
   }
 
-  const tasks = await db.all(query, queryParams);
+  const { page, pageSize, offset } = parsePageParams(req.query, R().config.pagination);
+  const countRow = await db.get<{ count: number | string }>(
+    `SELECT COUNT(DISTINCT t.id) as count FROM tasks t
+     LEFT JOIN projects p ON t.projectId = p.id
+     LEFT JOIN project_members pm ON p.id = pm.projectId
+     LEFT JOIN team_projects tp ON p.id = tp.projectId
+     LEFT JOIN team_members tm ON tp.teamId = tm.teamId
+     ${conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : ""}`,
+    queryParams
+  );
+  const total = Number(countRow?.count || 0);
+
+  query += " ORDER BY t.createdAt DESC LIMIT ? OFFSET ?";
+  const pageParams = [...queryParams, pageSize, offset];
+  const tasks = await db.all(query, pageParams);
   
   if (tasks.length > 0) {
     const taskIds = tasks.map((t: any) => t.id);
@@ -64,7 +79,7 @@ router.get("/api/tasks", auth, async (req: any, res: any) => {
     });
   }
   
-  res.json(tasks);
+  sendPaginated(res, tasks, buildPageInfo(total, page, pageSize));
 });
 
 // Logs activity
