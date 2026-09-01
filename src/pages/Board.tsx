@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useGitFeature } from '../contexts/GitFeatureContext';
@@ -10,25 +10,19 @@ import ProjectActivityModal from '../components/ProjectActivityModal';
 import { Plus, MoreVertical, Calendar, ArrowUpDown, CornerDownRight, Search, Filter, AlertCircle, ChevronUp, Minus, ChevronDown, X, FolderKanban, Activity, CheckCircle2, Workflow, Clock, Pencil, Trash2, UserPlus, Download, GitBranch, GitPullRequest } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn, safeFormatDate } from '../lib/utils';
+import { canCreateTasks } from '../lib/permissions';
 import { useSearchParams, Link, Navigate, useNavigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import UserAvatar from '../components/UserAvatar';
 import { exportToCSV, exportToJSON } from '../lib/export';
 import { HelpIcon, Tooltip } from '../components/Tooltip';
-import { EmptyState } from '../components/EmptyState';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
+import { useBoardColumns } from '../hooks/useBoardColumns';
+import { DEFAULT_BOARD_COLUMNS, type BoardColumn } from '../lib/board';
 
-export interface Column {
-  id: string;
-  title: string;
-}
-
-export const DEFAULT_COLUMNS: Column[] = [
-  { id: 'todo', title: 'To Do' },
-  { id: 'in_progress', title: 'In Progress' },
-  { id: 'review', title: 'Review' },
-  { id: 'done', title: 'Done' }
-];
+export type Column = BoardColumn;
+export const DEFAULT_COLUMNS = DEFAULT_BOARD_COLUMNS;
 
 type SortOption = 'custom' | 'priority' | 'deadline' | 'createdAt';
 type SortDirection = 'asc' | 'desc';
@@ -56,14 +50,7 @@ export default function Board() {
   
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   
-  const [columns, setColumns] = useState<Column[]>(() => {
-    try {
-      const saved = localStorage.getItem(`board-columns-${projectId || 'all'}`);
-      return saved ? JSON.parse(saved) : DEFAULT_COLUMNS;
-    } catch (e) {
-      return DEFAULT_COLUMNS;
-    }
-  });
+  const { columns, setColumns } = useBoardColumns(projectId, token);
 
   const [editingColumnId, setEditingColumnId] = useState<string | null>(null);
   const [editingColumnTitle, setEditingColumnTitle] = useState('');
@@ -88,64 +75,6 @@ export default function Board() {
   const handleDeleteColumn = (id: string) => {
     setColumns(columns.filter(c => c.id !== id));
   };
-
-  const currentProjectIdRef = useRef(projectId);
-  useEffect(() => {
-    let isMounted = true;
-    const loadColumns = async () => {
-      if (projectId && token) {
-        try {
-          const res = await fetch(`/api/projects/${projectId}/columns`, {
-            headers: { }
-          });
-          if (res.ok) {
-            const data = await res.json();
-            const serverCols = Array.isArray(data) ? data : (data && data.columns && Array.isArray(data.columns) ? data.columns : null);
-            if (serverCols && serverCols.length > 0) {
-              if (isMounted) {
-                setColumns(serverCols);
-                localStorage.setItem(`board-columns-${projectId}`, JSON.stringify(serverCols));
-                currentProjectIdRef.current = projectId;
-                return;
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Failed to load server columns:", e);
-        }
-      }
-      try {
-        const saved = localStorage.getItem(`board-columns-${projectId || 'all'}`);
-        if (isMounted) {
-          setColumns(saved ? JSON.parse(saved) : DEFAULT_COLUMNS);
-        }
-      } catch (e) {
-        if (isMounted) setColumns(DEFAULT_COLUMNS);
-      }
-      currentProjectIdRef.current = projectId;
-    };
-    loadColumns();
-    return () => { isMounted = false; };
-  }, [projectId, token]);
-
-  useEffect(() => {
-    if (currentProjectIdRef.current === projectId) {
-      localStorage.setItem(`board-columns-${projectId || 'all'}`, JSON.stringify(columns));
-      if (projectId && token) {
-        // Debounced sync to server
-        const timer = setTimeout(() => {
-          fetch(`/api/projects/${projectId}/columns`, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ columns })
-          }).catch(err => console.error("Failed to save project columns:", err));
-        }, 500);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [columns, projectId, token]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isWorkloadModalOpen, setIsWorkloadModalOpen] = useState(false);
@@ -205,17 +134,12 @@ export default function Board() {
 
   const fetchData = async () => {
     try {
-      const results = await Promise.all([
-        fetch('/api/tasks', { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch('/api/projects', { headers: { } }),
-        fetch('/api/milestones', { headers: { } })
+      const [tasksData, usersData, projectsData, milestonesData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
+        fetchAllPages<Milestone>('/api/milestones'),
       ]);
-      
-      const tasksData: Task[] = await results[0].json();
-      const usersData = await results[1].json();
-      const projectsData: Project[] = await results[2].json();
-      const milestonesData: Milestone[] = await results[3].json();
       
       setAllProjects(projectsData);
       setMilestones(milestonesData);
@@ -384,13 +308,7 @@ export default function Board() {
     setTasks(tasks.map(t => t.id === taskId ? { ...t, status: targetStatus as any, orderIndex: newOrderIndex } : t));
     
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...task, status: targetStatus, orderIndex: newOrderIndex })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...task, status: targetStatus, orderIndex: newOrderIndex });
     } catch (err) {
       console.error('Failed to update status', err);
     } finally {
@@ -413,40 +331,25 @@ export default function Board() {
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
     const isEdit = !!editingTask;
-    const url = isEdit ? `/api/tasks/${editingTask!.id}` : '/api/tasks';
-    const method = isEdit ? 'PUT' : 'POST';
 
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify(taskData)
-      });
-      if (res.ok) {
-        setIsModalOpen(false);
-        fetchData();
-        success(editingTask ? 'Task updated' : 'Task created');
+      if (isEdit) {
+        await apiPut(`/api/tasks/${editingTask!.id}`, taskData);
       } else {
-        const errData = await res.text();
-        error(`Failed to save task: ${errData}`);
+        await apiPost('/api/tasks', taskData);
       }
-    } catch (err: any) {
+      setIsModalOpen(false);
+      fetchData();
+      success(editingTask ? 'Task updated' : 'Task created');
+    } catch (err: unknown) {
       console.error(err);
-      error(`Error saving task: ${err.message}`);
+      error(`Error saving task: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   };
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
       if (updates.status === 'done') {
         success('Task completed');
@@ -476,13 +379,7 @@ export default function Board() {
     try {
       const selectedTasks = tasks.filter(t => selectedTaskIds.has(t.id));
       await Promise.all(selectedTasks.map(t => 
-        fetch(`/api/tasks/${t.id}`, {
-          method: 'PUT',
-          headers: { 
-            'Content-Type': 'application/json' 
-          },
-          body: JSON.stringify({ ...t, ...updates })
-        })
+        apiPut(`/api/tasks/${t.id}`, { ...t, ...updates })
       ));
       setSelectedTaskIds(new Set());
       fetchData();
@@ -502,10 +399,7 @@ export default function Board() {
     if (!window.confirm(`Are you sure you want to delete ${selectedTaskIds.size} tasks?`)) return;
     try {
       await Promise.all(Array.from(selectedTaskIds).map(id => 
-        fetch(`/api/tasks/${id}`, {
-          method: 'DELETE',
-          headers: { }
-        })
+        apiDelete(`/api/tasks/${id}`)
       ));
       setSelectedTaskIds(new Set());
       fetchData();
@@ -519,10 +413,7 @@ export default function Board() {
   const handleDeleteTask = async (taskId: string) => {
 
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
+      await apiDelete(`/api/tasks/${taskId}`);
       fetchData();
       success('Task deleted');
     } catch (err) {
@@ -591,7 +482,7 @@ export default function Board() {
               </h1>
               <div className="text-xs text-subtle mt-1 prose dark:prose-invert prose-sm line-clamp-1">
                 {project.description ? (
-                  <Markdown>{project.description}</Markdown>
+                  <SafeMarkdown>{project.description}</SafeMarkdown>
                 ) : (
                   'Project Task Board'
                 )}
@@ -747,7 +638,7 @@ export default function Board() {
               </>
             )}
           </div>
-          {user?.role !== 'developer' && (
+          {canCreateTasks(user) && (
             <Tooltip content="Create a new task with keyboard shortcut: c" position="bottom">
               <button
                 onClick={handleCreateTask}
@@ -846,7 +737,7 @@ export default function Board() {
                   </span>
                 </div>
                 <div className="flex flex-row items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {user?.role !== 'developer' && (
+                  {canCreateTasks(user) && (
                     <Tooltip content={`Add Task to ${column.title}`} position="top">
                       <button
                         onClick={() => handleCreateTaskInColumn(column.id)}
@@ -876,7 +767,16 @@ export default function Board() {
                   return (
                     <div
                       key={task.id}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Task: ${task.title}`}
                       draggable
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleEditTask(task);
+                        }
+                      }}
                       onDragStart={(e) => {
                         e.dataTransfer.effectAllowed = 'move';
                         e.dataTransfer.setData('taskId', task.id);

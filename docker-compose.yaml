@@ -2,6 +2,8 @@ services:
   postgres:
     image: postgres:18
     restart: always
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-devuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
@@ -21,6 +23,8 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: always
+    env_file:
+      - .env
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     depends_on:
@@ -31,8 +35,20 @@ services:
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-3000}
       - DATABASE_URL=postgres://${POSTGRES_USER:-devuser}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-devdb}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set in the environment or .env}
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:?TOKEN_ENCRYPTION_KEY must be set and distinct from SECRET_KEY}
+      - APP_URL=${APP_URL:?APP_URL must be set (e.g. https://your-domain.com)}
+      - ALLOW_PUBLIC_REGISTER=${ALLOW_PUBLIC_REGISTER:-false}
+      - OAUTH_AUTO_PROVISION=${OAUTH_AUTO_PROVISION:-false}
+      - OAUTH_ALLOWED_DOMAINS=${OAUTH_ALLOWED_DOMAINS:-}
+      - GIT_ENABLED=${GIT_ENABLED:-true}
+      - GIT_PR_SYNC_INTERVAL_MS=${GIT_PR_SYNC_INTERVAL_MS:-}
+      - JSON_BODY_LIMIT=${JSON_BODY_LIMIT:-}
+      - RATE_LIMIT_API_MAX=${RATE_LIMIT_API_MAX:-}
+      - RATE_LIMIT_AUTH_MAX=${RATE_LIMIT_AUTH_MAX:-}
+      - BCRYPT_ROUNDS=${BCRYPT_ROUNDS:-}
+      - AUTH_COOKIE_MAX_AGE_MS=${AUTH_COOKIE_MAX_AGE_MS:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - APP_URL=${APP_URL}
       - VITE_APP_NAME=${VITE_APP_NAME:-ProjectManager}
       - VITE_APP_VERSION=${VITE_APP_VERSION:-1.0.0}
       - GITLAB_URL=${GITLAB_URL}
@@ -47,7 +63,12 @@ services:
       - SMTP_USER=${SMTP_USER}
       - SMTP_PASS=${SMTP_PASS}
       - SMTP_FROM=${SMTP_FROM}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   postgres_data:
-

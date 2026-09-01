@@ -16,6 +16,7 @@ Full operational guides and feature documentation are available in the [`/docs`]
 - **[📅 Calendar & Workload Analytics](./docs/06-calendar-and-workload.md)**: Calendar view, member capacity tracking, workload balancing.
 - **[👥 Team & User Administration](./docs/07-team-and-user-administration.md)**: Team domains, admin user management, grabbable profile settings carousel.
 - **[💾 Database Operations & Backups](./docs/08-database-and-backups.md)**: SQLite vs PostgreSQL, in-app backup UI, terminal CLI utility (`db-cli.ts`), Docker deployment.
+- **[⚙️ Configuration](./docs/09-configuration.md)**: Index of `server/config.ts` environment keys.
 
 ---
 
@@ -33,11 +34,10 @@ Full operational guides and feature documentation are available in the [`/docs`]
 
 ## Tech Stack
 
-- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, Lucide React, Framer Motion (`motion/react`)
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS, Lucide React, Motion
 - **Data Visualizations**: `@xyflow/react`, Dagre, Recharts, D3.js
 - **Backend Application**: Node.js + Express.js API (bundle output via `esbuild`)
-- **Database Architecture**: SQLite (`sqlite3`) default with optional PostgreSQL (`pg`) support
-- **AI Tooling**: Google Gemini (`@google/genai`) for intelligent code branch suggestions and task formatting
+- **Database Architecture**: SQLite (`sqlite3`) when `DATABASE_URL` is unset; PostgreSQL (`pg`) when it is set (fail-fast, no silent fallback)
 
 ---
 
@@ -49,25 +49,35 @@ npm install
 ```
 
 ### 2. Environment Setup
-Copy `.env.example` to `.env` or declare environment variables:
+Copy `.env.example` to `.env`. In production you **must** set `SECRET_KEY`, `TOKEN_ENCRYPTION_KEY` (distinct from `SECRET_KEY`), and `APP_URL`.
+
 ```env
-# Optional Gemini API Key
-GEMINI_API_KEY="YOUR_API_KEY"
-
-# Optional PostgreSQL URL (defaults to local SQLite if omitted)
-DATABASE_URL="postgres://user:password@localhost:5432/dbname"
-
-# APP_URL
+SECRET_KEY="generate-a-long-random-string"
+TOKEN_ENCRYPTION_KEY="a-different-long-random-string"
 APP_URL="http://localhost:3000"
+# Optional Postgres. If set, the process fails when Postgres is down (no SQLite fallback).
+# DATABASE_URL="postgres://user:password@localhost:5432/dbname"
+ALLOW_PUBLIC_REGISTER="false"
+OAUTH_AUTO_PROVISION="false"
 ```
 
 ### 3. Start Development Server
-Starts the Express server with Vite middleware on port 3000:
 ```bash
 npm run dev
 ```
 
-### 4. Build & Run Production
+## Tests & CI
+
+```bash
+npm test        # API + config unit tests (Node test runner)
+npm run lint    # tsc --noEmit
+npm run build
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs lint, test, and build on push/PR — no secrets required.
+
+### 4. Production
+
 ```bash
 npm run build
 npm start
@@ -80,8 +90,8 @@ npm start
 Manage database snapshots and JSON data portability via terminal:
 
 ```bash
-# View database stats and table row counts
-npm run db-cli stats
+# View database stats and table row counts (uses active engine from config)
+npm run db-cli status
 
 # Backup database to ./backups/
 npm run db-cli backup

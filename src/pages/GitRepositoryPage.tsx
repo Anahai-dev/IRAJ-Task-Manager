@@ -11,6 +11,7 @@ import {
   Code2, AlertCircle, Sparkles, ChevronDown
 } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
+import { apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 export default function GitRepositoryPage() {
   const { token, user } = useAuth();
@@ -57,15 +58,11 @@ export default function GitRepositoryPage() {
     if (!selectedProjectId) return;
     setSyncingPRs(true);
     try {
-      const res = await fetch(`/api/projects/${selectedProjectId}/git/pull-requests/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        if (data.updatedCount > 0) {
+      const data = await apiPost<{ success?: boolean; updatedCount?: number; error?: string }>(
+        `/api/projects/${selectedProjectId}/git/pull-requests/sync`
+      );
+      if (data.success) {
+        if (data.updatedCount && data.updatedCount > 0) {
           success(`Successfully synchronized PRs! Updated ${data.updatedCount} task(s).`);
         } else {
           info('All Pull Request statuses are already up to date!');
@@ -86,15 +83,10 @@ export default function GitRepositoryPage() {
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const res = await fetch('/api/projects', {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setProjects(data);
-          if (data.length > 0 && !selectedProjectId) {
-            setSelectedProjectId(data[0].id);
-          }
+        const data = await fetchAllPages<Project>('/api/projects');
+        setProjects(data);
+        if (data.length > 0 && !selectedProjectId) {
+          setSelectedProjectId(data[0].id);
         }
       } catch (err) {
         console.error("Failed to load projects:", err);
@@ -130,15 +122,12 @@ export default function GitRepositoryPage() {
     if (!selectedProjectId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/projects/${selectedProjectId}/git/branches`, {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setBranches(data.branches || []);
-        if (data.error) {
-          info(`Git notice: ${data.error}`);
-        }
+      const data = await apiGet<{ branches?: GitBranch[]; error?: string }>(
+        `/api/projects/${selectedProjectId}/git/branches`
+      );
+      setBranches(data.branches || []);
+      if (data.error) {
+        info(`Git notice: ${data.error}`);
       }
     } catch (err: any) {
       console.error("Failed to load branches:", err);
@@ -150,12 +139,8 @@ export default function GitRepositoryPage() {
   const fetchTasks = async () => {
     if (!selectedProjectId) return;
     try {
-      const res = await fetch(`/api/tasks?projectId=${selectedProjectId}`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setTasks(await res.json());
-      }
+      const data = await fetchAllPages<Task>(`/api/tasks?projectId=${selectedProjectId}`);
+      setTasks(data);
     } catch (err) {
       console.error("Failed to fetch project tasks:", err);
     }
@@ -182,27 +167,15 @@ export default function GitRepositoryPage() {
     }
     setSavingSettings(true);
     try {
-      const res = await fetch(`/api/projects/${selectedProjectId}/repo`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          repoProvider,
-          repoOwner,
-          repoName,
-          repoUrl,
-          repoToken,
-          defaultBranch
-        })
+      const updated = await apiPut<Project>(`/api/projects/${selectedProjectId}/repo`, {
+        repoProvider,
+        repoOwner,
+        repoName,
+        repoUrl,
+        repoToken,
+        defaultBranch
       });
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Failed to save repository settings');
-      }
-
-      const updated = await res.json();
       setActiveProject(updated);
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
       success('Repository integration configured successfully');
@@ -228,20 +201,16 @@ export default function GitRepositoryPage() {
 
     setCreatingBranch(true);
     try {
-      const res = await fetch(`/api/projects/${selectedProjectId}/git/branches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const data = await apiPost<{ success?: boolean; error?: string; remoteError?: string; message?: string }>(
+        `/api/projects/${selectedProjectId}/git/branches`,
+        {
           branchName: newBranchName.trim().toUpperCase(),
           taskId: selectedTaskId || null,
           baseBranch
-        })
-      });
+        }
+      );
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
+      if (!data.success) {
         throw new Error(data.error || data.remoteError || 'Failed to create branch');
       }
 
@@ -271,22 +240,18 @@ export default function GitRepositoryPage() {
 
     setCreatingPR(true);
     try {
-      const res = await fetch(`/api/projects/${selectedProjectId}/git/pull-requests`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const data = await apiPost<{ prUrl?: string; isFallback?: boolean }>(
+        `/api/projects/${selectedProjectId}/git/pull-requests`,
+        {
           taskId: prTaskId || null,
           sourceBranch: prSourceBranch,
           targetBranch: prTargetBranch || defaultBranch || 'main',
           title: prTitle || `Merge ${prSourceBranch} into ${prTargetBranch || 'main'}`,
           description: prDescription
-        })
-      });
+        }
+      );
 
-      const data = await res.json();
-      if (res.ok && data.prUrl) {
+      if (data.prUrl) {
         window.open(data.prUrl, '_blank');
         if (data.isFallback) {
           info('Credentials unconfigured or API connection failed. Opened web compare page in a new tab for manual creation!');

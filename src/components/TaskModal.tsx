@@ -4,10 +4,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useGitFeature } from '../contexts/GitFeatureContext';
 import { X, GitBranch, Edit2, Calendar, Clock, CheckCircle2, Trash, Plus, FolderKanban, GitPullRequest, ExternalLink, ChevronDown } from 'lucide-react';
-import Markdown from 'react-markdown';
+import SafeMarkdown from './SafeMarkdown';
 import { cn, getIncrementedBranchName, safeFormatDate } from '../lib/utils';
+import { canDeleteTasks, canEditAllTasks } from '../lib/permissions';
 import UserAvatar from './UserAvatar';
 import CustomSelect from './CustomSelect';
+import { apiDelete, apiGet, apiPost, apiPut, fetchAllPages, unwrapList } from '../lib/api';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface TaskModalProps {
   task: Task | null;
@@ -30,11 +33,11 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const { success, error, info } = useToast();
   const { gitEnabled } = useGitFeature();
   const isEdit = !!task;
-  const isDeveloper = user?.role === 'developer';
-  const canEdit = isDeveloper 
-    ? (isEdit && user?.id === task?.assigneeId)
-    : (user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || user?.id === task?.creatorId || user?.id === task?.assigneeId);
+  const canEdit = canEditAllTasks(user) || user?.id === task?.creatorId || user?.id === task?.assigneeId || !isEdit;
+  const isDeveloper = !canEditAllTasks(user);
   const [isViewMode, setIsViewMode] = useState(isEdit);
+
+  useEscapeKey(onClose);
 
   const getStatusTitle = (id: string) => columns?.find(c => c.id === id)?.title || id.replace('_', ' ');
   
@@ -55,8 +58,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const [projectsList, setProjectsList] = useState<Project[]>([]);
   
   useEffect(() => {
-    fetch('/api/projects', { headers: { } })
-      .then(res => res.json())
+    fetchAllPages<Project>('/api/projects')
       .then(data => {
         setProjectsList(data);
         if (data.length === 1 && !formData.projectId) {
@@ -68,11 +70,8 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
 
   useEffect(() => {
     if (formData.projectId) {
-      fetch(`/api/projects/${formData.projectId}/milestones`, { headers: { } })
-        .then(res => res.json())
-        .then(data => {
-          setMilestones(data);
-        })
+      apiGet<unknown>(`/api/projects/${formData.projectId}/milestones`)
+        .then((data) => setMilestones(unwrapList(data)))
         .catch(err => console.error("Error fetching milestones", err));
     } else {
       setMilestones([]);
@@ -98,9 +97,9 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
     if (isViewMode && task) {
       setLoadingDetails(true);
       Promise.all([
-        fetch(`/api/tasks/${task.id}/details`, { headers: { } }).then(r => r.json()),
-        (task.projectId || projectId) 
-          ? fetch(`/api/projects/${task.projectId || projectId}/activity`, { headers: { } }).then(r => r.json()) 
+        apiGet<{ comments?: unknown[]; activities?: unknown[] }>(`/api/tasks/${task.id}/details`),
+        (task.projectId || projectId)
+          ? apiGet<unknown[]>(`/api/projects/${task.projectId || projectId}/activity`)
           : Promise.resolve([])
       ])
       .then(([taskDetails, projectActivityData]) => {
@@ -116,20 +115,11 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const handleCreateComment = async () => {
     if (!newComment.trim() || !task) return;
     try {
-      const res = await fetch(`/api/tasks/${task.id}/comments`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content: newComment.trim() })
-      });
-      const comment = await res.json();
+      const comment = await apiPost(`/api/tasks/${task.id}/comments`, { content: newComment.trim() });
       setComments([...comments, comment]);
       setNewComment('');
-      // Optionally reload activities since comment adds one
-      fetch(`/api/tasks/${task.id}/details`, { headers: { } })
-        .then(res => res.json())
-        .then(data => setActivities(data.activities || []));
+      const data = await apiGet<{ activities?: unknown[] }>(`/api/tasks/${task.id}/details`);
+      setActivities(data.activities || []);
     } catch (err) {
       console.error(err);
     }
@@ -138,14 +128,9 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const handleEditComment = async (commentId: string) => {
     if (!editCommentContent.trim() || !task) return;
     try {
-      const res = await fetch(`/api/tasks/${task.id}/comments/${commentId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content: editCommentContent.trim() })
+      const updatedComment = await apiPut(`/api/tasks/${task.id}/comments/${commentId}`, {
+        content: editCommentContent.trim(),
       });
-      const updatedComment = await res.json();
       setComments(comments.map(c => c.id === commentId ? updatedComment : c));
       setEditingCommentId(null);
       setEditCommentContent('');
@@ -158,11 +143,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
 
     if (!task) return;
     try {
-      await fetch(`/api/tasks/${task.id}/comments/${commentId}`, {
-        method: 'DELETE',
-        headers: {
-        }
-      });
+      await apiDelete(`/api/tasks/${task.id}/comments/${commentId}`);
       setComments(comments.filter(c => c.id !== commentId));
       success('Comment deleted');
     } catch (err) {
@@ -210,18 +191,11 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
 
     setGeneratingBranch(true);
     try {
-      const res = await fetch(`/api/projects/${formData.projectId}/git/branches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          branchName: targetBranch,
-          taskId: task?.id || null
-        })
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const data = await apiPost<{ success?: boolean; branchName?: string; message?: string; error?: string }>(
+        `/api/projects/${formData.projectId}/git/branches`,
+        { branchName: targetBranch, taskId: task?.id || null }
+      );
+      if (data.success) {
         setFormData(prev => ({ ...prev, branchName: data.branchName || targetBranch }));
         success(data.message || `Remote branch '${targetBranch}' created successfully!`);
       } else {
@@ -238,14 +212,11 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
     if (!formData.title) return;
     setGeneratingBranch(true);
     try {
-      const res = await fetch('/api/tasks/branch', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ title: formData.title, type: 'feat', projectId: task?.projectId || projectId })
+      const data = await apiPost<{ branchName?: string }>('/api/tasks/branch', {
+        title: formData.title,
+        type: 'feat',
+        projectId: task?.projectId || projectId,
       });
-      const data = await res.json();
       if (data.branchName) {
         setFormData(prev => ({ ...prev, branchName: data.branchName }));
         success('Branch created successfully');
@@ -260,20 +231,12 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const handleCreateTaskPR = async (t: Task) => {
     if (!t.branchName || !t.projectId) return;
     try {
-      const res = await fetch(`/api/projects/${t.projectId}/git/pull-requests`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          taskId: t.id,
-          sourceBranch: t.branchName,
-          title: `[Task] ${t.title}`
-        })
+      const data = await apiPost<{ prUrl?: string }>(`/api/projects/${t.projectId}/git/pull-requests`, {
+        taskId: t.id,
+        sourceBranch: t.branchName,
+        title: `[Task] ${t.title}`,
       });
-
-      const data = await res.json();
-      if (res.ok && data.prUrl) {
+      if (data.prUrl) {
         window.open(data.prUrl, '_blank');
         success('Pull Request link opened!');
       } else {
@@ -289,11 +252,16 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
     const assignee = users.find(u => u.id === task.assigneeId);
     
     return (
-      <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-modal-title"
+        className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300"
+      >
         <div className="my-auto bg-surface border border-border-subtle rounded-lg shadow-2xl w-full max-w-3xl max-h-[calc(100vh-2rem)] md:max-h-[90vh] flex flex-col font-sans overflow-hidden">
           <div className="px-6 py-4 border-b border-border-subtle flex justify-between items-start bg-page-bg">
             <div className="flex-1 pr-4">
-              <h2 className="text-xl font-bold text-strong mb-2">{task.title}</h2>
+              <h2 id="task-modal-title" className="text-xl font-bold text-strong mb-2">{task.title}</h2>
               <div className="flex flex-wrap items-center gap-3 text-xs">
                 <span className={cn(
                   "px-2 py-0.5 rounded font-bold uppercase tracking-wider",
@@ -343,7 +311,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
               </div>
             </div>
             <div className="flex items-center space-x-2 shrink-0">
-              {onDeleteTask && !isDeveloper && (user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || user?.id === task.creatorId) && (
+              {onDeleteTask && (canDeleteTasks(user) || user?.id === task.creatorId) && (
                 <button
                   onClick={() => {
                     onDeleteTask(task.id);
@@ -408,7 +376,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                         <h3 className="text-[10px] font-bold text-subtle uppercase tracking-widest mb-3 border-b border-border-subtle pb-1">Description</h3>
                         <div className="prose dark:prose-invert prose-sm max-w-none text-primary">
                           {task.description ? (
-                            <Markdown skipHtml={true}>{task.description}</Markdown>
+                            <SafeMarkdown>{task.description}</SafeMarkdown>
                           ) : (
                             <span className="italic text-subtle">No description provided.</span>
                           )}
@@ -560,7 +528,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                                         {editCommentPreviewMode && (
                                           <div className="w-1/2 overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-2 rounded border border-border-subtle bg-surface-dim text-primary font-sans h-full">
                                             {editCommentContent ? (
-                                              <Markdown skipHtml={true}>{editCommentContent}</Markdown>
+                                              <SafeMarkdown>{editCommentContent}</SafeMarkdown>
                                             ) : (
                                               <span className="text-subtle italic">Preview...</span>
                                             )}
@@ -585,7 +553,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                                     </div>
                                   ) : (
                                     <div className="prose dark:prose-invert prose-sm max-w-none text-primary">
-                                      <Markdown skipHtml={true}>{c.content}</Markdown>
+                                      <SafeMarkdown>{c.content}</SafeMarkdown>
                                     </div>
                                   )}
                                 </div>
@@ -625,7 +593,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                            {newCommentPreviewMode && (
                              <div className="w-1/2 overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-2 rounded border border-border-subtle bg-surface-dim text-primary font-sans h-full">
                                {newComment ? (
-                                 <Markdown>{newComment}</Markdown>
+                                 <SafeMarkdown>{newComment}</SafeMarkdown>
                                ) : (
                                  <span className="text-subtle italic">Preview...</span>
                                )}
@@ -761,10 +729,15 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   }
 
   return (
-    <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="task-form-title"
+      className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300"
+    >
       <div className="my-auto bg-surface border border-border-subtle rounded-lg shadow-2xl w-full max-w-3xl max-h-[calc(100vh-2rem)] md:max-h-[90vh] flex flex-col font-sans">
         <div className="px-6 py-4 border-b border-border-subtle flex justify-between items-center bg-page-bg rounded-t-lg">
-          <h2 className="text-sm font-bold text-strong uppercase tracking-widest">{isEdit ? 'Edit Task' : 'Create Task'}</h2>
+          <h2 id="task-form-title" className="text-sm font-bold text-strong uppercase tracking-widest">{isEdit ? 'Edit Task' : 'Create Task'}</h2>
           <button onClick={onClose} className="text-subtle hover:text-red-400 transition-colors">
             <X size={18} />
           </button>
@@ -971,7 +944,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
               {previewMode && (
                 <div className="w-1/2 h-full overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-4 rounded border border-border-subtle bg-surface-dim text-primary font-sans text-sm">
                   {formData.description ? (
-                    <Markdown skipHtml={true}>{formData.description}</Markdown>
+                    <SafeMarkdown>{formData.description}</SafeMarkdown>
                   ) : (
                     <span className="text-subtle italic">No description provided.</span>
                   )}

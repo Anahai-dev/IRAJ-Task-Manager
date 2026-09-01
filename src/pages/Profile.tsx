@@ -5,7 +5,10 @@ import { useAuth } from "../contexts/AuthContext";
 import { useTheme } from "../contexts/ThemeContext";
 import { useToast } from "../contexts/ToastContext";
 import { useGitFeature } from "../contexts/GitFeatureContext";
+import { User } from "../types";
 import { cn, getUserColor, getUserGradient, safeFormatDistanceToNow } from "../lib/utils";
+import { apiFetchBlob, apiGet, apiPost, apiPut } from "../lib/api";
+import { hasFlag } from "../lib/permissions";
 import {
   User as UserIcon,
   Save,
@@ -102,7 +105,7 @@ export default function Profile() {
     { id: 'security', label: 'Security Log', icon: Shield },
     { id: 'skills', label: 'Skills & Expertise', icon: Code },
     ...(isManagerOrAdmin && gitEnabled ? [{ id: 'integrations', label: 'Integrations', icon: GitBranch }] : []),
-    ...((user?.role === 'admin' || user?.role === 'super_admin') ? [{ id: 'backup', label: 'Backup & Restore', icon: Database }] : []),
+    ...((user?.role === 'admin' || user?.role === 'super_admin' || hasFlag(user, 'reset_database')) ? [{ id: 'backup', label: 'Backup & Restore', icon: Database }] : []),
   ];
 
   const handleNextTab = () => {
@@ -157,13 +160,8 @@ export default function Profile() {
   useEffect(() => {
     const fetchIntegrationsStatus = async () => {
       try {
-        const res = await fetch("/api/integrations/status", {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setIntegrationsStatus(data);
-        }
+        const data = await apiGet("/api/integrations/status");
+        setIntegrationsStatus(data);
       } catch (e) {
         console.error("Failed to fetch integrations status:", e);
       }
@@ -187,14 +185,11 @@ export default function Profile() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch("/api/users/me/stats", {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setStats({ tasks: data.tasks, projects: data.projects });
-          setActivities(data.recentActivity || []);
-        }
+        const data = await apiGet<{ tasks: number; projects: number; recentActivity?: unknown[] }>(
+          "/api/users/me/stats"
+        );
+        setStats({ tasks: data.tasks, projects: data.projects });
+        setActivities(data.recentActivity || []);
       } catch (e) {
         console.error(e);
       }
@@ -209,13 +204,8 @@ export default function Profile() {
   const fetchDbInfo = async () => {
     setLoadingInfo(true);
     try {
-      const res = await fetch("/api/backup/info", {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setDbInfo(data);
-      }
+      const data = await apiGet("/api/backup/info");
+      setDbInfo(data);
     } catch (e) {
       console.error("Failed to fetch database information:", e);
     } finally {
@@ -231,19 +221,13 @@ export default function Profile() {
   }, [activeTab, token]);
 
   /**
-   * Initiates download of the live binary SQLite database file.
-  /**
-   * Exports all database tables as a single portable JSON file.
-   * Downloads formatted output that can be restored into SQLite or Postgres.
+   * Exports all database tables as a metadata-only JSON file.
+   * Password hashes and Git PATs are redacted; use the CLI for secrets-preserving snapshots.
    */
   const handleJsonDownload = async () => {
     try {
-      const res = await fetch("/api/backup/export-json", {
-        headers: { }
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
+      const blob = await apiFetchBlob("/api/backup/export-json", { method: "POST" });
+      const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = "workspace-backup.json";
@@ -252,10 +236,6 @@ export default function Profile() {
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
         success("JSON database backup downloaded successfully!");
-      } else {
-        const err = await res.json();
-        error(err.error || "Failed to download JSON backup.");
-      }
     } catch (e: any) {
       error(`Download failed: ${e.message}`);
     }
@@ -278,23 +258,11 @@ export default function Profile() {
       const text = await file.text();
       const jsonData = JSON.parse(text);
       
-      const res = await fetch("/api/backup/restore-json", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(jsonData)
-      });
-      
-      if (res.ok) {
-        success("Database restored successfully from JSON backup! Page will reload in 2 seconds.");
-        setTimeout(() => {
-          window.location.reload();
-        }, 2000);
-      } else {
-        const errData = await res.json();
-        error(errData.error || "Failed to restore JSON database.");
-      }
+      await apiPost("/api/backup/restore-json", { ...jsonData, confirm: true });
+      success("Database restored successfully from JSON backup! Page will reload in 2 seconds.");
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
     } catch (e: any) {
       error(`Error: ${e.message}`);
     } finally {
@@ -305,17 +273,8 @@ export default function Profile() {
   const saveSkills = async (newSkillsList: { id: string, name: string }[]) => {
     try {
       const stringSkills = newSkillsList.map(s => s.name);
-      const res = await fetch("/api/users/me", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ name: user?.name, skills: stringSkills }),
-      });
-      if (res.ok) {
-        const updatedUser = await res.json();
-        updateUser(updatedUser);
-      }
+      const updatedUser = await apiPut<User>("/api/users/me", { name: user?.name, skills: stringSkills });
+      updateUser(updatedUser);
     } catch(err) {
       error("Failed to save skills");
     }
@@ -343,26 +302,13 @@ export default function Profile() {
 
     setPasswordSaving(true);
     try {
-      const res = await fetch("/api/users/me/password", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(passwordData),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (user && login) {
-          login(undefined, user);
-        }
-        success("Password changed successfully.");
-        setIsChangingPassword(false);
-        setPasswordData({ currentPassword: '', newPassword: '' });
-      } else {
-        const data = await res.json();
-        error(data.error || "Failed to change password.");
+      await apiPut("/api/users/me/password", passwordData);
+      if (user && login) {
+        login(undefined, user);
       }
+      success("Password changed successfully.");
+      setIsChangingPassword(false);
+      setPasswordData({ currentPassword: '', newPassword: '' });
     } catch (err) {
       error("An unexpected error occurred.");
     } finally {
@@ -391,22 +337,9 @@ export default function Profile() {
 
     setSaving(true);
     try {
-      const res = await fetch("/api/users/me", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ name, status: statusText }),
-      });
-
-      if (res.ok) {
-        const updatedUser = await res.json();
-        updateUser(updatedUser);
-        success("Profile updated successfully.");
-      } else {
-        const data = await res.json();
-        error(data.error || "Failed to update profile.");
-      }
+      const updatedUser = await apiPut<User>("/api/users/me", { name, status: statusText });
+      updateUser(updatedUser);
+      success("Profile updated successfully.");
     } catch (err) {
       console.error(err);
       error("An unexpected error occurred.");
@@ -979,7 +912,7 @@ export default function Profile() {
                 </div>
               )}
 
-              {activeTab === 'backup' && (user?.role === 'admin' || user?.role === 'super_admin') && (
+              {activeTab === 'backup' && (user?.role === 'admin' || user?.role === 'super_admin' || hasFlag(user, 'reset_database')) && (
                 <div className="space-y-6 animate-fade-in">
                   {/* Database Info Card */}
                   <div className="bg-surface border border-border-subtle rounded-xl overflow-hidden shadow-sm animate-slide-up">
@@ -1072,7 +1005,7 @@ export default function Profile() {
                               Portable JSON Schema (.json)
                             </div>
                             <p className="text-xs text-muted mb-4 leading-relaxed">
-                              Export database tables in plain JSON. This format is fully portable and can be used to transfer data between SQLite and PostgreSQL backends easily.
+                              Export a metadata JSON dump of workspace tables. Password hashes and Git PATs are redacted, so this file cannot be restored in-app. Use the CLI for a secrets-preserving snapshot.
                             </p>
                           </div>
                           <button
@@ -1087,7 +1020,7 @@ export default function Profile() {
                     </div>
                   </div>
 
-                  {/* Restore Utilities */}
+                  {user?.role === 'super_admin' && (
                   <div className="bg-surface border border-border-subtle rounded-xl overflow-hidden shadow-sm">
                     <div className="p-4 border-b border-border-subtle bg-surface-dim/30 flex items-center gap-2">
                       <Upload size={18} className="text-subtle" />
@@ -1114,7 +1047,7 @@ export default function Profile() {
                             Restore JSON File
                           </div>
                           <p className="text-xs text-muted mb-4 leading-relaxed">
-                            Upload a portable workspace `.json` backup file to restore records across any engine.
+                            Upload a CLI JSON export that includes live password hashes and Git PATs. In-app redacted exports are refused. This wipes existing tables.
                           </p>
                           <label className="block w-full">
                             <div className="w-full py-2.5 border border-dashed border-border-subtle hover:border-green-500 rounded text-center cursor-pointer transition-colors flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider text-strong">
@@ -1136,6 +1069,7 @@ export default function Profile() {
                       </div>
                     </div>
                   </div>
+                  )}
                 </div>
               )}
 

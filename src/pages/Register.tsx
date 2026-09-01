@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { LayoutDashboard, Eye, EyeOff, Gitlab, Github, Chrome } from 'lucide-react';
+import { User } from '../types';
+import { apiGet, apiPost } from '../lib/api';
 
 export default function Register() {
   const [name, setName] = useState('');
@@ -32,9 +34,7 @@ export default function Register() {
 
   const handleGitLabLogin = async () => {
     try {
-      const res = await fetch(`/api/auth/gitlab/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get GitLab auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/gitlab/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'gitlab_oauth', 'width=600,height=700');
       if (!authWindow) {
@@ -47,9 +47,7 @@ export default function Register() {
 
   const handleGoogleLogin = async () => {
     try {
-      const res = await fetch(`/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get Google auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'google_oauth', 'width=600,height=700');
       if (!authWindow) {
@@ -62,9 +60,7 @@ export default function Register() {
 
   const handleGitHubLogin = async () => {
     try {
-      const res = await fetch(`/api/auth/github/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get GitHub auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/github/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'github_oauth', 'width=600,height=700');
       if (!authWindow) {
@@ -80,13 +76,10 @@ export default function Register() {
     setError('');
     setInfoMessage('');
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password, role }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Registration failed');
+      const data = await apiPost<{ error?: string; requiresVerification?: boolean; message?: string; user?: User }>(
+        '/api/auth/register',
+        { name, email, password, role }
+      );
       
       if (data.requiresVerification) {
         setInfoMessage(data.message || 'Registration successful. Please verify your email before logging in.');

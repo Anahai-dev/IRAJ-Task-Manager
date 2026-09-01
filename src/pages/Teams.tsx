@@ -4,10 +4,11 @@ import { useToast } from '../contexts/ToastContext';
 import { Team, TeamMember, User, Project } from '../types';
 import { Users, Plus, X, Trash2, Shield, FolderKanban, ChevronDown } from 'lucide-react';
 import { safeFormatDate } from '../lib/utils';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import UserAvatar from '../components/UserAvatar';
 import SearchableSelect from '../components/SearchableSelect';
 import { EmptyState } from '../components/EmptyState';
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 export default function Teams() {
   const { token, user: currentUser } = useAuth();
@@ -21,16 +22,10 @@ export default function Teams() {
   // Data fetching
   const fetchTeams = async () => {
     try {
-      const pRes = await fetch('/api/projects', { headers: { }});
-      if (pRes.ok) {
-        setProjects(await pRes.json());
-      }
-      const res = await fetch('/api/teams', {
-        headers: { }
-      });
-      if (res.ok) {
-        setTeams(await res.json());
-      }
+      const projectsData = await fetchAllPages<Project>('/api/projects');
+      setProjects(projectsData);
+      const teamsData = await apiGet<Team[]>('/api/teams');
+      setTeams(teamsData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -114,14 +109,9 @@ export default function Teams() {
                               e.preventDefault();
 
                               try {
-                                const res = await fetch(`/api/teams/${team.id}`, {
-                                  method: 'DELETE',
-                                  headers: { }
-                                });
-                                if (res.ok) {
-                                  if (selectedTeam?.id === team.id) setSelectedTeam(null);
-                                  fetchTeams();
-                                }
+                                await apiDelete(`/api/teams/${team.id}`);
+                                if (selectedTeam?.id === team.id) setSelectedTeam(null);
+                                fetchTeams();
                               } catch (err) {
                                 console.error(err);
                               }
@@ -137,7 +127,7 @@ export default function Teams() {
                   </div>
                   <div className="text-xs text-muted mb-4 flex-1 prose dark:prose-invert prose-sm prose-p:my-1 overflow-hidden text-ellipsis line-clamp-2 break-words text-left">
                     {team.description ? (
-                      <Markdown>{team.description}</Markdown>
+                      <SafeMarkdown>{team.description}</SafeMarkdown>
                     ) : (
                       'No description provided.'
                     )}
@@ -194,8 +184,7 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch('/api/projects', { headers: { } })
-      .then(r => r.json())
+    fetchAllPages<Project>('/api/projects')
       .then(setProjects)
       .catch(console.error);
   }, [token]);
@@ -205,18 +194,15 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
     if (!name.trim()) return;
     setSubmitting(true);
     try {
-      const res = await fetch(team ? `/api/teams/${team.id}` : '/api/teams', {
-        method: team ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description, projectId: projectId || undefined })
-      });
-      if (res.ok) {
-        onSuccess();
+      if (team) {
+        await apiPut(`/api/teams/${team.id}`, { name, description, projectId: projectId || undefined });
       } else {
-        const err = await res.text();
-        alert(`Error saving team: ${err}`);
+        await apiPost('/api/teams', { name, description, projectId: projectId || undefined });
       }
+      onSuccess();
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Error saving team';
+      alert(`Error saving team: ${message}`);
       console.error(err);
     } finally {
       setSubmitting(false);
@@ -295,7 +281,7 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
             ) : (
               <div className="w-full h-32 overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-4 rounded border border-border-subtle bg-surface-dim text-primary font-sans text-sm">
                 {description ? (
-                  <Markdown>{description}</Markdown>
+                  <SafeMarkdown>{description}</SafeMarkdown>
                 ) : (
                   <span className="text-subtle italic">No description provided.</span>
                 )}
@@ -342,19 +328,17 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [membersRes, usersRes, teamProjectsRes, allProjectsRes] = await Promise.all([
-        fetch(`/api/teams/${team.id}/members`, { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch(`/api/teams/${team.id}/projects`, { headers: { } }),
-        fetch('/api/projects', { headers: { } })
+      const [membersData, usersData, teamProjectsData, allProjectsData] = await Promise.all([
+        apiGet<TeamMember[]>(`/api/teams/${team.id}/members`),
+        fetchAllPages<User>('/api/users'),
+        apiGet<Project[]>(`/api/teams/${team.id}/projects`),
+        fetchAllPages<Project>('/api/projects')
       ]);
-      
-      if (membersRes.ok && usersRes.ok && teamProjectsRes.ok && allProjectsRes.ok) {
-        setMembers(await membersRes.json());
-        setAllUsers(await usersRes.json());
-        setTeamProjects(await teamProjectsRes.json());
-        setAllProjects(await allProjectsRes.json());
-      }
+
+      setMembers(membersData);
+      setAllUsers(usersData);
+      setTeamProjects(teamProjectsData);
+      setAllProjects(allProjectsData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -371,19 +355,12 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
     if (!userToAdd) return;
     setAddingUser(true);
     try {
-      const res = await fetch(`/api/teams/${team.id}/members`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: userToAdd })
-      });
-      if (res.ok) {
-        setUserToAdd('');
-        fetchData();
-      } else {
-        const data = await res.json();
-        alert(data.error);
-      }
+      await apiPost(`/api/teams/${team.id}/members`, { userId: userToAdd });
+      setUserToAdd('');
+      fetchData();
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to add member';
+      alert(message);
       console.error(err);
     } finally {
       setAddingUser(false);
@@ -393,13 +370,8 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const handleRemoveMember = async (userId: string) => {
 
     try {
-      const res = await fetch(`/api/teams/${team.id}/members/${userId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        fetchData();
-      }
+      await apiDelete(`/api/teams/${team.id}/members/${userId}`);
+      fetchData();
     } catch (err) {
       console.error(err);
     }
@@ -410,19 +382,12 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
     if (!projectToAdd) return;
     setAddingProject(true);
     try {
-      const res = await fetch(`/api/teams/${team.id}/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: projectToAdd })
-      });
-      if (res.ok) {
-        setProjectToAdd('');
-        fetchData();
-      } else {
-        const data = await res.json();
-        alert(data.error);
-      }
+      await apiPost(`/api/teams/${team.id}/projects`, { projectId: projectToAdd });
+      setProjectToAdd('');
+      fetchData();
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to add project';
+      alert(message);
       console.error(err);
     } finally {
       setAddingProject(false);
@@ -432,13 +397,8 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const handleRemoveProject = async (projectId: string) => {
 
     try {
-      const res = await fetch(`/api/teams/${team.id}/projects/${projectId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        fetchData();
-      }
+      await apiDelete(`/api/teams/${team.id}/projects/${projectId}`);
+      fetchData();
     } catch (err) {
       console.error(err);
     }
@@ -447,13 +407,8 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const handleDeleteTeam = async () => {
 
     try {
-      const res = await fetch(`/api/teams/${team.id}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        onTeamDeleted();
-      }
+      await apiDelete(`/api/teams/${team.id}`);
+      onTeamDeleted();
     } catch (err) {
       console.error(err);
     }
@@ -490,7 +445,7 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
           <section>
             <h3 className="text-[10px] font-bold text-subtle uppercase tracking-widest mb-3 border-b border-border-subtle pb-1">Description</h3>
             <div className="prose dark:prose-invert prose-sm max-w-none text-primary">
-              <Markdown>{team.description}</Markdown>
+              <SafeMarkdown>{team.description}</SafeMarkdown>
             </div>
           </section>
         )}

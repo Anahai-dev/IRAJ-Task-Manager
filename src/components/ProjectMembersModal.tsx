@@ -4,6 +4,7 @@ import { Project, User, ProjectMember } from '../types';
 import { X, Trash2, UserPlus, Settings, Shield, ChevronDown } from 'lucide-react';
 import UserAvatar from './UserAvatar';
 import CustomSelect from './CustomSelect';
+import { apiDelete, apiGet, apiPost } from '../lib/api';
 
 interface Props {
   project: Project;
@@ -21,12 +22,8 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
 
   const fetchMembers = async () => {
     try {
-      const res = await fetch(`/api/projects/${project.id}/members`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setMembers(await res.json());
-      }
+      const data = await apiGet<ProjectMember[]>(`/api/projects/${project.id}/members`);
+      setMembers(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -43,22 +40,13 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
     if (!selectedUserId) return;
     setAdding(true);
     try {
-      const res = await fetch(`/api/projects/${project.id}/members`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ userId: selectedUserId, role: selectedRole })
-      });
-      if (res.ok) {
-        setSelectedUserId('');
-        setSelectedRole('member');
-        fetchMembers();
-      } else {
-        const errData = await res.text();
-        alert(`Failed to add member: ${errData}`);
-      }
+      await apiPost(`/api/projects/${project.id}/members`, { userId: selectedUserId, role: selectedRole });
+      setSelectedUserId('');
+      setSelectedRole('member');
+      fetchMembers();
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to add member';
+      alert(`Failed to add member: ${message}`);
       console.error(err);
     } finally {
       setAdding(false);
@@ -67,16 +55,8 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
 
   const handleUpdateRole = async (userId: string, newRole: string) => {
     try {
-      const res = await fetch(`/api/projects/${project.id}/members`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ userId, role: newRole })
-      });
-      if (res.ok) {
-        fetchMembers();
-      }
+      await apiPost(`/api/projects/${project.id}/members`, { userId, role: newRole });
+      fetchMembers();
     } catch (err) {
       console.error(err);
     }
@@ -85,13 +65,8 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
   const handleRemoveMember = async (userId: string) => {
 
     try {
-      const res = await fetch(`/api/projects/${project.id}/members/${userId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        fetchMembers();
-      }
+      await apiDelete(`/api/projects/${project.id}/members/${userId}`);
+      fetchMembers();
     } catch(err) {
       console.error(err);
     }

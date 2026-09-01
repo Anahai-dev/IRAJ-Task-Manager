@@ -1,93 +1,65 @@
 # 💾 Database Operations & Backups
 
-DevTeam Task Manager supports zero-config local **SQLite** development and high-performance **PostgreSQL** production environments, accompanied by in-app and CLI backup utilities.
+IRAJ Task Manager supports local **SQLite** development and **PostgreSQL** production. Engine selection is explicit: there is no silent fallback.
 
 ---
 
 ## 1. Dual Engine Architecture (SQLite & PostgreSQL)
 
-The application automatically selects its database driver based on environment variables:
+- **SQLite**: used when `DATABASE_URL` is omitted (or left as the placeholder). File path defaults to `./database.sqlite` or `SQLITE_PATH`. The process **exits** if the file is not writable (no `/tmp` fallback).
+- **PostgreSQL**: used when `DATABASE_URL` is a real `postgres://` / `postgresql://` URL. If Postgres is down, the process **fails fast** instead of writing to a local SQLite file.
 
-- **SQLite Engine** *(Default)*: Activated when `DATABASE_URL` is omitted. Stores data locally in `database.sqlite` inside the root folder. Ideal for local dev, rapid testing, and VPS single-node deployments.
-- **PostgreSQL Engine**: Activated when `DATABASE_URL` is set (e.g., `DATABASE_URL=postgres://user:pass@localhost:5432/dbname`). Ideal for production deployments and multi-container scaling.
-
----
-
-## 2. In-App Backup & Restore UI
-
-Admins can manage database backups directly from the **Profile -> Backup & Restore** section:
-
-### Exporting Options:
-- **Binary SQLite Download (`.sqlite`)**: Direct binary copy of the active SQLite database file.
-- **Portable JSON Backup (`.json`)**: Formatted JSON representation of all tables and records. Portable between SQLite and PostgreSQL backends!
-
-### Restoring Data:
-- Click **"Restore Database"** and select a `.sqlite` or `.json` backup file.
-- The system validates the schema, replaces active records inside a single transaction, and automatically creates a `.rollback` backup before completing.
+`GET /api/health` reports `{ ok, engine: "sqlite"|"postgres", db: "up"|"down" }` and returns HTTP 503 when the configured engine cannot be pinged.
 
 ---
 
-## 3. Command Line Interface Utility (`scripts/db-cli.ts`)
+## 2. In-App Backup UI
 
-You can run database maintenance tasks from the server terminal:
+Super Admins can open **Profile → Backup & Restore**:
 
-### Command Syntax:
-```bash
-npm run db-cli <command> [args]
-# or
-npx tsx scripts/db-cli.ts <command> [args]
-```
+### Export (POST `/api/backup/export-json`)
+- Cookie-authenticated **POST** (not GET — GET was CSRF-able with SameSite=Lax).
+- Writes a **metadata-only** JSON file (`secretsIncluded: false`). Password hashes and Git PATs are redacted as `••••••••`.
+- This file is **not restoreable**. Use it for a human-readable workspace snapshot, not disaster recovery.
 
-### Supported Commands:
+### Restore (POST `/api/backup/restore-json`)
+- Super Admin only. Body must include `confirm: true`.
+- **Refuses** redacted/sentinel secrets and any dump with `secretsIncluded: false`.
+- Wipes allowlisted tables inside a transaction, then inserts. There is no automatic `.rollback` file on the HTTP API.
+- For a secrets-preserving restore, use a CLI export that contains live `passwordHash` / `repoToken` values (keep that file encrypted at rest).
 
-#### 1. `stats` / `status`
-Displays database status, active file path, storage size, and table row counts.
+Admins without `reset_database` can view engine stats (`GET /api/backup/info`) but cannot export or restore.
+
+---
+
+## 3. Command Line Interface (`scripts/db-cli.ts`)
+
+SQLite-oriented local tool (not copied into the Docker image):
+
 ```bash
 npm run db-cli stats
-```
-
-#### 2. `backup [target-file]`
-Creates a binary snapshot of the SQLite database file in `./backups/`.
-```bash
 npm run db-cli backup
-# Output: Backup saved to ./backups/backup-2026-07-22-013000.sqlite
+npm run db-cli export-json ./backups/export.json
+npm run db-cli import-json ./backups/export.json
 ```
 
-#### 3. `restore <source-file>`
-Restores database from a binary `.sqlite` file. Automatically creates an emergency `.rollback` file first.
-```bash
-npm run db-cli restore ./backups/backup-2026-07-22-013000.sqlite
-```
-
-#### 4. `export-json [target-file]`
-Exports all database tables into a portable JSON file.
-```bash
-npm run db-cli export-json ./backups/data-export.json
-```
-
-#### 5. `import-json <source-file>`
-Imports tables from a portable JSON backup file inside a single transaction.
-```bash
-npm run db-cli import-json ./backups/data-export.json
-```
+CLI `export-json` currently dumps live secrets. Treat those files as credentials.
 
 ---
 
 ## 4. Production VPS & Docker Deployment
 
-### Docker Compose Quickstart:
-```bash
-# 1. Start Postgres + Node.js App container
-docker compose up -d --build
+Required in production (Compose reads them from `.env` / `env_file`, never hardcodes them):
 
-# 2. Inspect logs
+- `SECRET_KEY` — JWT signing
+- `TOKEN_ENCRYPTION_KEY` — PAT encryption (must be **distinct** from `SECRET_KEY`)
+- `APP_URL` — public origin
+- `DATABASE_URL` — Postgres (Compose always sets this)
+
+```bash
+cp .env.example .env   # fill SECRET_KEY, TOKEN_ENCRYPTION_KEY, APP_URL
+docker compose up -d --build
 docker compose logs -f app
 ```
 
-### Self-Hosting on VPS with PM2 (SQLite Mode):
-```bash
-npm install --production
-npm run build
-npm install -g pm2
-pm2 start dist/server.cjs --name "devteam-taskmanager"
-```
+If Postgres is unreachable, the app container will not silently switch to SQLite; `/api/health` fails and the Compose healthcheck is unhealthy.

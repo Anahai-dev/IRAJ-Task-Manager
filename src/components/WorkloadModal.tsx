@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { X, Activity, User, CheckCircle2, CircleDashed } from 'lucide-react';
 import UserAvatar from './UserAvatar';
+import { apiGet } from '../lib/api';
 
 interface WorkloadModalProps {
   projectId: string;
@@ -52,11 +53,9 @@ export default function WorkloadModal({ projectId, projectName, onClose }: Workl
     let active = true;
     const fetchWorkload = async () => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/workload`, {
-          headers: { }
-        });
-        if (res.ok && active) {
-          setWorkloads(await res.json());
+        const data = await apiGet<any[]>(`/api/projects/${projectId}/workload`);
+        if (active) {
+          setWorkloads(data);
         }
       } catch (err) {
         console.error(err);

@@ -20,6 +20,7 @@ import {
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, CheckCircle2, Plus, FolderKanban } from 'lucide-react';
 import { cn } from '../lib/utils';
 import TaskModal from '../components/TaskModal';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { Tooltip } from '../components/Tooltip';
 
 export default function CalendarView() {
@@ -41,14 +42,11 @@ export default function CalendarView() {
 
   const fetchData = async () => {
     try {
-      const [tasksRes, usersRes, projectsRes] = await Promise.all([
-        fetch('/api/tasks', { headers: { } }),
-        fetch('/api/users', { headers: { } }),
-        fetch('/api/projects', { headers: { } })
+      const [tasksData, usersData, projectsData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
       ]);
-      const tasksData = await tasksRes.json();
-      const usersData = await usersRes.json();
-      const projectsData = await projectsRes.json();
       
       setUsers(usersData);
       setAllProjects(projectsData);
@@ -73,13 +71,7 @@ export default function CalendarView() {
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
     } catch (err) {
       console.error(err);
@@ -88,26 +80,17 @@ export default function CalendarView() {
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
     const isEdit = !!selectedTask;
-    const url = isEdit ? `/api/tasks/${selectedTask!.id}` : '/api/tasks';
-    const method = isEdit ? 'PUT' : 'POST';
 
     try {
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(taskData)
-      });
-      if (res.ok) {
-        setIsModalOpen(false);
-        setSelectedTask(null);
-        setSelectedDateForNewTask(null);
-        fetchData();
+      if (isEdit) {
+        await apiPut(`/api/tasks/${selectedTask!.id}`, taskData);
       } else {
-        const errData = await res.text();
-        alert(`Failed to save task: ${errData}`);
+        await apiPost('/api/tasks', taskData);
       }
+      setIsModalOpen(false);
+      setSelectedTask(null);
+      setSelectedDateForNewTask(null);
+      fetchData();
     } catch (err: any) {
       console.error(err);
       alert(`Error saving task: ${err.message}`);
@@ -115,12 +98,8 @@ export default function CalendarView() {
   };
 
   const handleDeleteTask = async (taskId: string) => {
-
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
+      await apiDelete(`/api/tasks/${taskId}`);
       setSelectedTask(null);
       fetchData();
     } catch (err) {

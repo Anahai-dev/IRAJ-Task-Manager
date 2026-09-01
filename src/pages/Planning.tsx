@@ -8,6 +8,7 @@ import { safeFormatDate } from '../lib/utils';
 import TaskTimelineD3 from '../components/TaskTimelineD3';
 import TaskModal from '../components/TaskModal';
 import CustomSelect from '../components/CustomSelect';
+import { apiDelete, apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { HelpIcon, Tooltip } from '../components/Tooltip';
 
 export default function Planning() {
@@ -51,10 +52,8 @@ export default function Planning() {
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/users', { headers: { } });
-      if (res.ok) {
-        setUsers(await res.json());
-      }
+      const usersData = await fetchAllPages<User>('/api/users');
+      setUsers(usersData);
     } catch (err) {
       console.error(err);
     }
@@ -62,13 +61,9 @@ export default function Planning() {
 
   const fetchTasks = async () => {
     try {
-      const res = await fetch('/api/tasks', { headers: { } });
-      if (res.ok) {
-        let allTasks = await res.json();
-        // filter by project
-        const projectTasks = allTasks.filter((t: any) => t.projectId === projectId);
-        setTasks(projectTasks);
-      }
+      const allTasks = await fetchAllPages<Task>('/api/tasks');
+      const projectTasks = allTasks.filter((t) => t.projectId === projectId);
+      setTasks(projectTasks);
     } catch (err) {
       console.error(err);
     }
@@ -110,15 +105,10 @@ export default function Planning() {
 
   const fetchProjects = async () => {
     try {
-      const res = await fetch('/api/projects', {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAllProjects(data);
-        if (projectId) {
-          setProject(data.find((p: Project) => p.id === projectId) || null);
-        }
+      const data = await fetchAllPages<Project>('/api/projects');
+      setAllProjects(data);
+      if (projectId) {
+        setProject(data.find((p) => p.id === projectId) || null);
       }
     } catch (err) {
       console.error(err);
@@ -129,12 +119,8 @@ export default function Planning() {
 
   const fetchMilestones = async () => {
     try {
-      const res = await fetch(`/api/projects/${projectId}/milestones`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setMilestones(await res.json());
-      }
+      const data = await apiGet<Milestone[]>(`/api/projects/${projectId}/milestones`);
+      setMilestones(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -145,36 +131,22 @@ export default function Planning() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const method = editMilestone ? 'PUT' : 'POST';
-      const url = editMilestone 
-        ? `/api/milestones/${editMilestone.id}` 
-        : `/api/projects/${projectId}/milestones`;
-
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(formData)
-      });
-      
-      if (res.ok) {
-        setShowModal(false);
-        fetchMilestones();
+      if (editMilestone) {
+        await apiPut(`/api/milestones/${editMilestone.id}`, formData);
+      } else {
+        await apiPost(`/api/projects/${projectId}/milestones`, formData);
       }
+      setShowModal(false);
+      fetchMilestones();
     } catch (err) {
       console.error(err);
     }
   };
 
   const handleDelete = async (id: string) => {
-
     try {
-      const res = await fetch(`/api/milestones/${id}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) fetchMilestones();
+      await apiDelete(`/api/milestones/${id}`);
+      fetchMilestones();
     } catch (err) {
       console.error(err);
     }
@@ -214,22 +186,13 @@ export default function Planning() {
   const handleSaveTask = async (updatedTask: Partial<Task>) => {
     if (!editingTask) return;
     try {
-      const res = await fetch(`/api/tasks/${editingTask.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(updatedTask)
-      });
-      if (res.ok) {
-        setIsTaskModalOpen(false);
-        setEditingTask(null);
-        fetchTasks();
-      } else {
-        alert("Failed to save task.");
-      }
+      await apiPut(`/api/tasks/${editingTask.id}`, updatedTask);
+      setIsTaskModalOpen(false);
+      setEditingTask(null);
+      fetchTasks();
     } catch (err) {
       console.error(err);
+      alert("Failed to save task.");
     }
   };
 

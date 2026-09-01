@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { Task } from '../types';
 import { differenceInHours, isPast, parseISO, formatDistanceToNow } from 'date-fns';
 import { Link } from 'react-router';
+import { fetchAllPages } from '../lib/api';
 import { cn, safeFormatDistanceToNow } from '../lib/utils';
 
 interface Notification {
@@ -45,20 +46,12 @@ export default function NotificationsDropdown({ expanded, compact }: { expanded?
     const fetchTasks = async () => {
       if (!token || !user) return;
       try {
-        const res = await fetch('/api/tasks', {
+        const allTasks = await fetchAllPages<Task>('/api/tasks', {
           headers: {
             'X-Silent-Fetch': 'true'
           },
           signal: abortController.signal
         });
-        if (!res.ok) return;
-        
-        const contentType = res.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-          return;
-        }
-        
-        const allTasks: Task[] = await res.json();
         
         // Filter tasks assigned to current user, not done, and deadline is approaching or passed
         const userTasks = allTasks.filter(t => t.assigneeId === user.id && t.status !== 'done');
