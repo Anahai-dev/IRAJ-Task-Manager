@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { User } from '../types';
 import { X, Activity, Clock, FileText, CheckCircle2, MessageSquare, AlertCircle } from 'lucide-react';
 import { safeFormatDate } from '../lib/utils';
+import { apiGet } from '../lib/api';
 
 interface ProjectActivityModalProps {
   projectId: string;
@@ -17,18 +18,15 @@ export default function ProjectActivityModal({ projectId, projectName, users, on
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/projects/${projectId}/activity`, {
-       headers: { }
-    })
-    .then(res => res.json())
-    .then(data => {
-       setActivities(data || []);
-       setLoading(false);
-    })
-    .catch(err => {
-      console.error("Failed to load project activity", err);
-      setLoading(false);
-    });
+    apiGet<any[]>(`/api/projects/${projectId}/activity`)
+      .then(data => {
+        setActivities(data || []);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error("Failed to load project activity", err);
+        setLoading(false);
+      });
   }, [projectId, token]);
 
   const getActionIcon = (action: string) => {

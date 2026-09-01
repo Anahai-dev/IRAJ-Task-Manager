@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { Project, Team } from '../types';
 import { X, Trash2, Plus, LogIn } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
+import { ApiError, apiGet, apiPost, apiPut } from '../lib/api';
 
 interface Props {
   project: Project;
@@ -21,13 +22,9 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
 
   const fetchTeams = async () => {
     try {
-      // Fetch all teams
-      const allRes = await fetch('/api/teams', { headers: { } });
-      if (allRes.ok) {
-        const data: Team[] = await allRes.json();
-        setAllTeams(data);
-        setTeams(data.filter((t) => t.projectId === project.id));
-      }
+      const data = await apiGet<Team[]>('/api/teams');
+      setAllTeams(data);
+      setTeams(data.filter((t) => t.projectId === project.id));
     } catch (err) {
       console.error(err);
     } finally {
@@ -44,20 +41,13 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
     if (!addingName.trim()) return;
     setCreating(true);
     try {
-      const res = await fetch('/api/teams', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: addingName, description: addingDesc, projectId: project.id })
-      });
-      if (res.ok) {
-        setAddingName('');
-        setAddingDesc('');
-        fetchTeams();
-      } else {
-        const err = await res.text();
-        alert(`Failed to create team: ${err}`);
-      }
+      await apiPost('/api/teams', { name: addingName, description: addingDesc, projectId: project.id });
+      setAddingName('');
+      setAddingDesc('');
+      fetchTeams();
     } catch(err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to create team';
+      alert(`Failed to create team: ${message}`);
       console.error(err);
     } finally {
       setCreating(false);
@@ -69,15 +59,9 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
     if (!addingExisting) return;
     
     try {
-      const res = await fetch(`/api/teams/${addingExisting}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: project.id })
-      });
-      if (res.ok) {
-        setAddingExisting('');
-        fetchTeams();
-      }
+      await apiPut(`/api/teams/${addingExisting}`, { projectId: project.id });
+      setAddingExisting('');
+      fetchTeams();
     } catch (err) {
       console.error(err);
     }
@@ -86,12 +70,8 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
   const handleRemoveFromProject = async (teamId: string) => {
     if (!confirm('Are you sure you want to remove this team from the project? (It will become a global team).')) return;
     try {
-      const res = await fetch(`/api/teams/${teamId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: null })
-      });
-      if (res.ok) fetchTeams();
+      await apiPut(`/api/teams/${teamId}`, { projectId: null });
+      fetchTeams();
     } catch (err) {
       console.error(err);
     }

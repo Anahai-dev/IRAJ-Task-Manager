@@ -8,7 +8,7 @@ import {
   ExternalLink, Plus, RefreshCw, CheckCircle2, GitPullRequest, 
   Copy, Check, Shield, AlertCircle, Key, Layers, Terminal
 } from 'lucide-react';
-import { fetchAllPages } from '../lib/api';
+import { apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 interface ProjectGitModalProps {
   project: Project;
@@ -46,15 +46,10 @@ export default function ProjectGitModal({ project, onClose, onUpdateProject }: P
   const fetchBranches = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/projects/${project.id}/git/branches`, {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setBranches(data.branches || []);
-        if (data.error) {
-          info(`Git notice: ${data.error}`);
-        }
+      const data = await apiGet<{ branches?: GitBranch[]; error?: string }>(`/api/projects/${project.id}/git/branches`);
+      setBranches(data.branches || []);
+      if (data.error) {
+        info(`Git notice: ${data.error}`);
       }
     } catch (err: any) {
       console.error("Failed to load branches:", err);
@@ -85,27 +80,15 @@ export default function ProjectGitModal({ project, onClose, onUpdateProject }: P
     }
     setSavingSettings(true);
     try {
-      const res = await fetch(`/api/projects/${project.id}/repo`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          repoProvider,
-          repoOwner,
-          repoName,
-          repoUrl,
-          repoToken,
-          defaultBranch
-        })
+      const updated = await apiPut<Project>(`/api/projects/${project.id}/repo`, {
+        repoProvider,
+        repoOwner,
+        repoName,
+        repoUrl,
+        repoToken,
+        defaultBranch
       });
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Failed to save repository settings');
-      }
-
-      const updated = await res.json();
       if (onUpdateProject) onUpdateProject(updated);
       success('Repository settings updated successfully');
       fetchBranches();
@@ -126,20 +109,16 @@ export default function ProjectGitModal({ project, onClose, onUpdateProject }: P
 
     setCreatingBranch(true);
     try {
-      const res = await fetch(`/api/projects/${project.id}/git/branches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const data = await apiPost<{ success?: boolean; error?: string; remoteError?: string; message?: string }>(
+        `/api/projects/${project.id}/git/branches`,
+        {
           branchName: newBranchName.trim(),
           taskId: selectedTaskId || null,
           baseBranch
-        })
-      });
+        }
+      );
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
+      if (!data.success) {
         throw new Error(data.error || data.remoteError || 'Failed to create branch');
       }
 
@@ -158,21 +137,17 @@ export default function ProjectGitModal({ project, onClose, onUpdateProject }: P
 
   const handleCreatePR = async (branchName: string, taskId?: string) => {
     try {
-      const res = await fetch(`/api/projects/${project.id}/git/pull-requests`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const data = await apiPost<{ prUrl?: string; isFallback?: boolean }>(
+        `/api/projects/${project.id}/git/pull-requests`,
+        {
           taskId,
           sourceBranch: branchName,
           targetBranch: defaultBranch || 'main',
           title: `[${project.projectKey || 'TASK'}] Merge ${branchName} into ${defaultBranch || 'main'}`
-        })
-      });
+        }
+      );
 
-      const data = await res.json();
-      if (res.ok && data.prUrl) {
+      if (data.prUrl) {
         window.open(data.prUrl, '_blank');
         if (data.isFallback) {
           info('Credentials unconfigured or API connection failed. Opened web compare page in a new tab for manual creation!');

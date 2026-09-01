@@ -16,7 +16,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { fetchAllPages } from '../lib/api';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 type WidgetType = 'stats' | 'my_tasks' | 'analytics' | 'my_notes' | 'recent_activity';
 
@@ -267,24 +267,16 @@ export default function Dashboard() {
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
     const isEdit = !!selectedTask;
-    const url = isEdit ? `/api/tasks/${selectedTask!.id}` : '/api/tasks';
     try {
-      const res = await fetch(url, {
-        method: isEdit ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(taskData)
-      });
-      if (res.ok) {
-        setSelectedTask(null);
-        setIsModalOpen(false);
-        fetchData();
-        success(isEdit ? 'Task updated' : 'Task created');
+      if (isEdit) {
+        await apiPut(`/api/tasks/${selectedTask!.id}`, taskData);
       } else {
-        const errData = await res.text();
-        error(`Failed to save task: ${errData}`);
+        await apiPost('/api/tasks', taskData);
       }
+      setSelectedTask(null);
+      setIsModalOpen(false);
+      fetchData();
+      success(isEdit ? 'Task updated' : 'Task created');
     } catch (err: any) {
       console.error(err);
       error(`Error saving task: ${err.message}`);
@@ -293,13 +285,7 @@ export default function Dashboard() {
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
       if (updates.status === 'done') {
         success('Task completed');
@@ -314,10 +300,7 @@ export default function Dashboard() {
 
   const handleDeleteTask = async (taskId: string) => {
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
+      await apiDelete(`/api/tasks/${taskId}`);
       fetchData();
       success('Task deleted');
     } catch (err) {

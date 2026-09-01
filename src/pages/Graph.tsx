@@ -7,9 +7,9 @@ import { cn } from '../lib/utils';
 import { canCreateTasks } from '../lib/permissions';
 import { useSearchParams, Link, Navigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 
-import { fetchAllPages } from '../lib/api';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { Column, DEFAULT_COLUMNS } from './Board';
 
 type SortOption = 'custom' | 'priority' | 'deadline' | 'createdAt';
@@ -133,24 +133,15 @@ export default function Graph() {
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
     const isEdit = !!editingTask;
-    const url = isEdit ? `/api/tasks/${editingTask!.id}` : '/api/tasks';
-    const method = isEdit ? 'PUT' : 'POST';
 
     try {
-      const res = await fetch(url, {
-        method,
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify(taskData)
-      });
-      if (res.ok) {
-        setIsModalOpen(false);
-        fetchData();
+      if (isEdit) {
+        await apiPut(`/api/tasks/${editingTask!.id}`, taskData);
       } else {
-        const errData = await res.text();
-        alert(`Failed to save task: ${errData}`);
+        await apiPost('/api/tasks', taskData);
       }
+      setIsModalOpen(false);
+      fetchData();
     } catch (err: any) {
       console.error(err);
       alert(`Error saving task: ${err.message}`);
@@ -159,13 +150,7 @@ export default function Graph() {
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await fetch(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
     } catch (err) {
       console.error(err);
@@ -173,13 +158,13 @@ export default function Graph() {
   };
 
   const handleDeleteTask = async (taskId: string) => {
-
-    await fetch(`/api/tasks/${taskId}`, {
-      method: 'DELETE',
-      headers: { }
-    });
-    setIsModalOpen(false);
-    fetchData();
+    try {
+      await apiDelete(`/api/tasks/${taskId}`);
+      setIsModalOpen(false);
+      fetchData();
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   if (loading) return <div className="p-8 text-primary">Loading graph...</div>;
@@ -242,7 +227,7 @@ export default function Graph() {
               </h1>
               <div className="text-xs text-subtle mt-1 prose dark:prose-invert prose-sm line-clamp-1">
                 {project.description ? (
-                  <Markdown>{project.description}</Markdown>
+                  <SafeMarkdown>{project.description}</SafeMarkdown>
                 ) : (
                   'Project Task Graph'
                 )}

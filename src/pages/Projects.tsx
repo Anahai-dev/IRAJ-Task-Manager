@@ -11,10 +11,10 @@ import ProjectActivityModal from '../components/ProjectActivityModal';
 import ProjectMembersModal from '../components/ProjectMembersModal';
 import ProjectTeamsModal from '../components/ProjectTeamsModal';
 import ProjectGitModal from '../components/ProjectGitModal';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import { exportToCSV, exportToJSON } from '../lib/export';
 import { EmptyState } from '../components/EmptyState';
-import { fetchAllPages } from '../lib/api';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { Tooltip } from '../components/Tooltip';
 
 export default function Projects() {
@@ -183,13 +183,8 @@ export default function Projects() {
                           e.preventDefault();
 
                           try {
-                            const res = await fetch(`/api/projects/${project.id}`, {
-                              method: 'DELETE',
-                              headers: { }
-                            });
-                            if (res.ok) {
-                              fetchProjects();
-                            }
+                            await apiDelete(`/api/projects/${project.id}`);
+                            fetchProjects();
                           } catch (err) {
                             console.error(err);
                           }
@@ -205,7 +200,7 @@ export default function Projects() {
                 
                 <div className="text-xs text-muted mb-6 flex-1 min-h-[32px] prose dark:prose-invert prose-sm prose-p:my-1 prose-h1:text-sm prose-h2:text-sm prose-h3:text-sm overflow-hidden text-ellipsis line-clamp-2 break-words">
                   {project.description ? (
-                    <Markdown>{project.description}</Markdown>
+                    <SafeMarkdown>{project.description}</SafeMarkdown>
                   ) : (
                     'No description provided.'
                   )}
@@ -389,22 +384,15 @@ function CreateProjectModal({ project, onClose, onSuccess }: { project?: Project
     setError(null);
     setSubmitting(true);
     try {
-      const res = await fetch(project ? `/api/projects/${project.id}` : '/api/projects', {
-        method: project ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ name, description, projectKey })
-      });
-      if (res.ok) {
-        onSuccess();
+      if (project) {
+        await apiPut(`/api/projects/${project.id}`, { name, description, projectKey });
       } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || 'Failed to save project. Please try again.');
+        await apiPost('/api/projects', { name, description, projectKey });
       }
+      onSuccess();
     } catch (err: any) {
       console.error(err);
-      setError('An error occurred. Please try again.');
+      setError(err.message || 'An error occurred. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -513,7 +501,7 @@ function CreateProjectModal({ project, onClose, onSuccess }: { project?: Project
               ) : (
                 <div className="w-full h-[96px] overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-4 rounded border border-border-subtle bg-surface-dim text-primary font-sans text-sm">
                   {description ? (
-                    <Markdown>{description}</Markdown>
+                    <SafeMarkdown>{description}</SafeMarkdown>
                   ) : (
                     <span className="text-subtle italic">No description provided.</span>
                   )}

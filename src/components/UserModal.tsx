@@ -3,6 +3,7 @@ import { User } from '../types';
 import { X, Save, ChevronDown } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import CustomSelect from './CustomSelect';
+import { ApiError, apiGet, apiPost, apiPut } from '../lib/api';
 
 interface UserModalProps {
   user?: User;
@@ -28,13 +29,8 @@ export default function UserModal({ user, onClose, onSave }: UserModalProps) {
   useEffect(() => {
     const fetchRoles = async () => {
       try {
-        const res = await fetch('/api/roles', {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setRoles(data);
-        }
+        const data = await apiGet<any[]>('/api/roles');
+        setRoles(data);
       } catch (err) {
         console.error('Failed to fetch roles:', err);
       }
@@ -48,28 +44,20 @@ export default function UserModal({ user, onClose, onSave }: UserModalProps) {
     setSaving(true);
     
     try {
-      const url = isEdit ? `/api/users/${user.id}` : '/api/users';
-      const method = isEdit ? 'PUT' : 'POST';
-      
       const payload: any = { ...formData };
       if (isEdit && !payload.password) {
         delete payload.password; // Don't send empty password on edit
       }
 
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-      
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save user');
+      if (isEdit) {
+        await apiPut(`/api/users/${user.id}`, payload);
+      } else {
+        await apiPost('/api/users', payload);
+      }
       
       onSave();
     } catch (err: any) {
-      setError(err.message);
+      setError(err instanceof ApiError ? err.message : err.message);
     } finally {
       setSaving(false);
     }

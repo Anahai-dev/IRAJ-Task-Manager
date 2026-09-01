@@ -5,7 +5,7 @@ import { User } from '../types';
 import { Shield, UserCog, Plus, Edit2, Trash2, X, Save, ChevronDown } from 'lucide-react';
 import UserModal from '../components/UserModal';
 import UserAvatar from '../components/UserAvatar';
-import { fetchAllPages } from '../lib/api';
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import CustomSelect from '../components/CustomSelect';
 
 export default function UsersAdmin() {
@@ -52,12 +52,8 @@ export default function UsersAdmin() {
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch('/api/roles', {
-        headers: { }
-      });
-      if (res.ok) {
-        setRoles(await res.json());
-      }
+      const data = await apiGet<any[]>('/api/roles');
+      setRoles(data);
     } catch (err) {
       console.error(err);
     }
@@ -80,21 +76,12 @@ export default function UsersAdmin() {
       return;
     }
     try {
-      const res = await fetch(`/api/users/${userToDelete.id}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      
-      if (res.ok) {
-        setUsers(users.filter(u => u.id !== userToDelete.id));
-        success(`User ${userToDelete.name} deleted successfully.`);
-      } else {
-        const data = await res.json();
-        error(data.error || 'Failed to delete user.');
-      }
+      await apiDelete(`/api/users/${userToDelete.id}`);
+      setUsers(users.filter(u => u.id !== userToDelete.id));
+      success(`User ${userToDelete.name} deleted successfully.`);
     } catch (err) {
       console.error(err);
-      error('An unexpected error occurred.');
+      error(err instanceof ApiError ? err.message : 'An unexpected error occurred.');
     }
   };
 
@@ -106,26 +93,18 @@ export default function UsersAdmin() {
     }
     try {
       const isEdit = !!editingRole;
-      const url = isEdit ? `/api/roles/${editingRole.id}` : '/api/roles';
-      const method = isEdit ? 'PUT' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(roleForm)
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save role');
+      if (isEdit) {
+        await apiPut(`/api/roles/${editingRole.id}`, roleForm);
+      } else {
+        await apiPost('/api/roles', roleForm);
+      }
 
       success(`Role ${isEdit ? 'updated' : 'created'} successfully.`);
       setIsRoleModalOpen(false);
       fetchRoles();
       fetchUsers();
     } catch (err: any) {
-      error(err.message);
+      error(err instanceof ApiError ? err.message : err.message);
     }
   };
 
@@ -134,21 +113,13 @@ export default function UsersAdmin() {
       return;
     }
     try {
-      const res = await fetch(`/api/roles/${roleId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        success(`Role "${roleName}" deleted successfully.`);
-        fetchRoles();
-        fetchUsers();
-      } else {
-        const data = await res.json();
-        error(data.error || 'Failed to delete role.');
-      }
+      await apiDelete(`/api/roles/${roleId}`);
+      success(`Role "${roleName}" deleted successfully.`);
+      fetchRoles();
+      fetchUsers();
     } catch (err) {
       console.error(err);
-      error('An unexpected error occurred.');
+      error(err instanceof ApiError ? err.message : 'An unexpected error occurred.');
     }
   };
 
@@ -180,28 +151,17 @@ export default function UsersAdmin() {
 
     setUpdatingBulk(true);
     try {
-      const res = await fetch('/api/users/bulk/role', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          userIds: selectedUserIds,
-          role: bulkRole
-        })
+      const data = await apiPut<{ message?: string }>('/api/users/bulk/role', {
+        userIds: selectedUserIds,
+        role: bulkRole
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to update roles.');
-      }
 
       success(data.message || `Successfully updated roles for ${selectedUserIds.length} users.`);
       setSelectedUserIds([]);
       setBulkRole('');
       fetchUsers();
     } catch (err: any) {
-      error(err.message);
+      error(err instanceof ApiError ? err.message : err.message);
     } finally {
       setUpdatingBulk(false);
     }
