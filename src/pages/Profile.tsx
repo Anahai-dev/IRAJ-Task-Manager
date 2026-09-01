@@ -6,6 +6,7 @@ import { useTheme } from "../contexts/ThemeContext";
 import { useToast } from "../contexts/ToastContext";
 import { useGitFeature } from "../contexts/GitFeatureContext";
 import { cn, getUserColor, getUserGradient, safeFormatDistanceToNow } from "../lib/utils";
+import { hasFlag } from "../lib/permissions";
 import {
   User as UserIcon,
   Save,
@@ -102,7 +103,7 @@ export default function Profile() {
     { id: 'security', label: 'Security Log', icon: Shield },
     { id: 'skills', label: 'Skills & Expertise', icon: Code },
     ...(isManagerOrAdmin && gitEnabled ? [{ id: 'integrations', label: 'Integrations', icon: GitBranch }] : []),
-    ...((user?.role === 'admin' || user?.role === 'super_admin') ? [{ id: 'backup', label: 'Backup & Restore', icon: Database }] : []),
+    ...((user?.role === 'admin' || user?.role === 'super_admin' || hasFlag(user, 'reset_database')) ? [{ id: 'backup', label: 'Backup & Restore', icon: Database }] : []),
   ];
 
   const handleNextTab = () => {
@@ -231,15 +232,14 @@ export default function Profile() {
   }, [activeTab, token]);
 
   /**
-   * Initiates download of the live binary SQLite database file.
-  /**
-   * Exports all database tables as a single portable JSON file.
-   * Downloads formatted output that can be restored into SQLite or Postgres.
+   * Exports all database tables as a metadata-only JSON file.
+   * Password hashes and Git PATs are redacted; use the CLI for secrets-preserving snapshots.
    */
   const handleJsonDownload = async () => {
     try {
       const res = await fetch("/api/backup/export-json", {
-        headers: { }
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
       });
       if (res.ok) {
         const blob = await res.blob();
@@ -283,7 +283,7 @@ export default function Profile() {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(jsonData)
+        body: JSON.stringify({ ...jsonData, confirm: true })
       });
       
       if (res.ok) {
@@ -979,7 +979,7 @@ export default function Profile() {
                 </div>
               )}
 
-              {activeTab === 'backup' && (user?.role === 'admin' || user?.role === 'super_admin') && (
+              {activeTab === 'backup' && (user?.role === 'admin' || user?.role === 'super_admin' || hasFlag(user, 'reset_database')) && (
                 <div className="space-y-6 animate-fade-in">
                   {/* Database Info Card */}
                   <div className="bg-surface border border-border-subtle rounded-xl overflow-hidden shadow-sm animate-slide-up">
@@ -1072,7 +1072,7 @@ export default function Profile() {
                               Portable JSON Schema (.json)
                             </div>
                             <p className="text-xs text-muted mb-4 leading-relaxed">
-                              Export database tables in plain JSON. This format is fully portable and can be used to transfer data between SQLite and PostgreSQL backends easily.
+                              Export a metadata JSON dump of workspace tables. Password hashes and Git PATs are redacted, so this file cannot be restored in-app. Use the CLI for a secrets-preserving snapshot.
                             </p>
                           </div>
                           <button
@@ -1087,7 +1087,7 @@ export default function Profile() {
                     </div>
                   </div>
 
-                  {/* Restore Utilities */}
+                  {user?.role === 'super_admin' && (
                   <div className="bg-surface border border-border-subtle rounded-xl overflow-hidden shadow-sm">
                     <div className="p-4 border-b border-border-subtle bg-surface-dim/30 flex items-center gap-2">
                       <Upload size={18} className="text-subtle" />
@@ -1114,7 +1114,7 @@ export default function Profile() {
                             Restore JSON File
                           </div>
                           <p className="text-xs text-muted mb-4 leading-relaxed">
-                            Upload a portable workspace `.json` backup file to restore records across any engine.
+                            Upload a CLI JSON export that includes live password hashes and Git PATs. In-app redacted exports are refused. This wipes existing tables.
                           </p>
                           <label className="block w-full">
                             <div className="w-full py-2.5 border border-dashed border-border-subtle hover:border-green-500 rounded text-center cursor-pointer transition-colors flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-wider text-strong">
@@ -1136,6 +1136,7 @@ export default function Profile() {
                       </div>
                     </div>
                   </div>
+                  )}
                 </div>
               )}
 

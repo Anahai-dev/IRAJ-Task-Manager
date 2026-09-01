@@ -10,6 +10,7 @@ import ProjectActivityModal from '../components/ProjectActivityModal';
 import { Plus, MoreVertical, Calendar, ArrowUpDown, CornerDownRight, Search, Filter, AlertCircle, ChevronUp, Minus, ChevronDown, X, FolderKanban, Activity, CheckCircle2, Workflow, Clock, Pencil, Trash2, UserPlus, Download, GitBranch, GitPullRequest } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn, safeFormatDate } from '../lib/utils';
+import { canCreateTasks } from '../lib/permissions';
 import { useSearchParams, Link, Navigate, useNavigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
 import Markdown from 'react-markdown';
@@ -747,7 +748,7 @@ export default function Board() {
               </>
             )}
           </div>
-          {user?.role !== 'developer' && (
+          {canCreateTasks(user) && (
             <Tooltip content="Create a new task with keyboard shortcut: c" position="bottom">
               <button
                 onClick={handleCreateTask}
@@ -846,7 +847,7 @@ export default function Board() {
                   </span>
                 </div>
                 <div className="flex flex-row items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {user?.role !== 'developer' && (
+                  {canCreateTasks(user) && (
                     <Tooltip content={`Add Task to ${column.title}`} position="top">
                       <button
                         onClick={() => handleCreateTaskInColumn(column.id)}

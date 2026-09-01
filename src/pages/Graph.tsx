@@ -4,6 +4,7 @@ import { Task, User, Project } from '../types';
 import TaskModal from '../components/TaskModal';
 import { Plus, Search, Filter, FolderKanban, Workflow, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { canCreateTasks } from '../lib/permissions';
 import { useSearchParams, Link, Navigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
 import Markdown from 'react-markdown';
@@ -301,7 +302,7 @@ export default function Graph() {
             <FolderKanban size={14} className="text-blue-400" />
             <span>TASK BOARD</span>
           </Link>
-          {user?.role !== 'developer' && (
+          {canCreateTasks(user) && (
             <button
               onClick={handleCreateTask}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded shadow hover:scale-105 transition-all flex items-center space-x-2"

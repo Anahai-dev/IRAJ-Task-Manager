@@ -6,6 +6,7 @@ import { useGitFeature } from '../contexts/GitFeatureContext';
 import { X, GitBranch, Edit2, Calendar, Clock, CheckCircle2, Trash, Plus, FolderKanban, GitPullRequest, ExternalLink, ChevronDown } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { cn, getIncrementedBranchName, safeFormatDate } from '../lib/utils';
+import { canDeleteTasks, canEditAllTasks } from '../lib/permissions';
 import UserAvatar from './UserAvatar';
 import CustomSelect from './CustomSelect';
 
@@ -30,10 +31,8 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const { success, error, info } = useToast();
   const { gitEnabled } = useGitFeature();
   const isEdit = !!task;
-  const isDeveloper = user?.role === 'developer';
-  const canEdit = isDeveloper 
-    ? (isEdit && user?.id === task?.assigneeId)
-    : (user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || user?.id === task?.creatorId || user?.id === task?.assigneeId);
+  const canEdit = canEditAllTasks(user) || user?.id === task?.creatorId || user?.id === task?.assigneeId || !isEdit;
+  const isDeveloper = !canEditAllTasks(user);
   const [isViewMode, setIsViewMode] = useState(isEdit);
 
   const getStatusTitle = (id: string) => columns?.find(c => c.id === id)?.title || id.replace('_', ' ');
@@ -343,7 +342,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
               </div>
             </div>
             <div className="flex items-center space-x-2 shrink-0">
-              {onDeleteTask && !isDeveloper && (user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || user?.id === task.creatorId) && (
+              {onDeleteTask && (canDeleteTasks(user) || user?.id === task.creatorId) && (
                 <button
                   onClick={() => {
                     onDeleteTask(task.id);

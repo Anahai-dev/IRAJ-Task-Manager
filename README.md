@@ -33,11 +33,10 @@ Full operational guides and feature documentation are available in the [`/docs`]
 
 ## Tech Stack
 
-- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, Lucide React, Framer Motion (`motion/react`)
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS, Lucide React, Motion
 - **Data Visualizations**: `@xyflow/react`, Dagre, Recharts, D3.js
 - **Backend Application**: Node.js + Express.js API (bundle output via `esbuild`)
-- **Database Architecture**: SQLite (`sqlite3`) default with optional PostgreSQL (`pg`) support
-- **AI Tooling**: Google Gemini (`@google/genai`) for intelligent code branch suggestions and task formatting
+- **Database Architecture**: SQLite (`sqlite3`) when `DATABASE_URL` is unset; PostgreSQL (`pg`) when it is set (fail-fast, no silent fallback)
 
 ---
 
@@ -49,25 +48,29 @@ npm install
 ```
 
 ### 2. Environment Setup
-Copy `.env.example` to `.env` or declare environment variables:
+Copy `.env.example` to `.env`. In production you **must** set `SECRET_KEY`, `TOKEN_ENCRYPTION_KEY` (distinct from `SECRET_KEY`), and `APP_URL`.
+
 ```env
-# Optional Gemini API Key
-GEMINI_API_KEY="YOUR_API_KEY"
-
-# Optional PostgreSQL URL (defaults to local SQLite if omitted)
-DATABASE_URL="postgres://user:password@localhost:5432/dbname"
-
-# APP_URL
+SECRET_KEY="generate-a-long-random-string"
+TOKEN_ENCRYPTION_KEY="a-different-long-random-string"
 APP_URL="http://localhost:3000"
+# Optional Postgres. If set, the process fails when Postgres is down (no SQLite fallback).
+# DATABASE_URL="postgres://user:password@localhost:5432/dbname"
+ALLOW_PUBLIC_REGISTER="false"
+OAUTH_AUTO_PROVISION="false"
 ```
 
 ### 3. Start Development Server
-Starts the Express server with Vite middleware on port 3000:
 ```bash
 npm run dev
 ```
 
-### 4. Build & Run Production
+### 4. Tests
+```bash
+npm test
+```
+
+### 5. Build & Run Production
 ```bash
 npm run build
 npm start

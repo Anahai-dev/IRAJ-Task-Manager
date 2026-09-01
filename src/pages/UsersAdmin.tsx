@@ -72,7 +72,7 @@ export default function UsersAdmin() {
       await Promise.all([fetchUsers(), fetchRoles()]);
       setLoading(false);
     };
-    const canAccess = currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.permissions?.manage_roles === true || currentUser?.permissions?.manage_users === true;
+    const canAccess = currentUser?.permissions?.manage_roles === true || currentUser?.permissions?.manage_users === true || currentUser?.role === 'super_admin';
     if (token && canAccess) {
       loadData();
     }
@@ -244,7 +244,7 @@ export default function UsersAdmin() {
     }
   };
 
-  if (currentUser?.role !== 'admin' && currentUser?.role !== 'super_admin') {
+  if (!currentUser?.permissions?.manage_users && !currentUser?.permissions?.manage_roles && currentUser?.role !== 'super_admin') {
     return (
       <div className="flex h-full items-center justify-center p-6 bg-page-bg">
         <div className="text-center space-y-4">
