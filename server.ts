@@ -6,7 +6,9 @@ import { v4 as uuidv4 } from "uuid";
 import { mapPrStatusToBoardColumn } from "./server/util.ts";
 import { getGithubPullRequest } from "./server/git/github.ts";
 import { getGitlabMergeRequest } from "./server/git/gitlab.ts";
+import { setGitApiConfig, gitApiConfigFromApp } from "./server/git/runtime-config.ts";
 import type { DatabaseWrapper } from "./server/types.ts";
+import type { AppConfig } from "./server/config.ts";
 
 async function runBackgroundPrSync(getDb: () => Promise<DatabaseWrapper>, decryptSecret: (t: string) => string) {
   console.log("[Background Sync] Starting automatic pull request sync...");
@@ -88,8 +90,52 @@ async function runBackgroundPrSync(getDb: () => Promise<DatabaseWrapper>, decryp
   }
 }
 
+function scheduleBackgroundJobs(config: AppConfig, getDb: () => Promise<DatabaseWrapper>, decryptSecret: (t: string) => string) {
+  const intervals: NodeJS.Timeout[] = [];
+
+  if (config.git.enabled) {
+    intervals.push(
+      setInterval(() => {
+        void runBackgroundPrSync(getDb, decryptSecret);
+      }, config.git.prSyncIntervalMs)
+    );
+    setTimeout(() => {
+      void runBackgroundPrSync(getDb, decryptSecret);
+    }, config.git.prSyncInitialDelayMs);
+  }
+
+  intervals.push(
+    setInterval(() => {
+      void (async () => {
+        try {
+          const db = await getDb();
+          await purgeStaleUnverifiedUsers(db, config.db.purgeUnverifiedUsersAfterMs);
+        } catch (e) {
+          console.error("Failed to purge unverified users:", e);
+        }
+      })();
+    }, config.db.purgeUnverifiedUsersIntervalMs)
+  );
+
+  intervals.push(
+    setInterval(() => {
+      void (async () => {
+        try {
+          const db = await getDb();
+          await db.run("DELETE FROM oauth_nonces WHERE timestamp < ?", Date.now() - config.oauth.nonceRetentionMs);
+        } catch (e) {
+          console.error("Failed to purge OAuth nonces:", e);
+        }
+      })();
+    }, config.oauth.noncePurgeIntervalMs)
+  );
+
+  return intervals;
+}
+
 async function startServer() {
   const config = loadConfig();
+  setGitApiConfig(gitApiConfigFromApp(config));
   const init = await initDb(config);
   const dbPromise = Promise.resolve(init.db);
   const getDb = () => dbPromise;
@@ -97,47 +143,20 @@ async function startServer() {
   const app = await createApp({ config, getDb, serveFrontend: true });
 
   const { decryptSecretOrEmpty } = (await import("./server/auth/crypto.ts")).createSecretCipher(
-    config.tokenEncryptionKey
+    config.security.tokenEncryptionKey
   );
 
-  const server = app.listen(config.port, config.host, () => {
-    console.log(`Server running on http://${config.host}:${config.port}`);
+  const server = app.listen(config.http.port, config.http.host, () => {
+    console.log(`Server running on http://${config.http.host}:${config.http.port}`);
   });
 
-  const syncInterval = setInterval(() => {
-    void runBackgroundPrSync(getDb, decryptSecretOrEmpty);
-  }, 5 * 60 * 1000);
-  setTimeout(() => {
-    void runBackgroundPrSync(getDb, decryptSecretOrEmpty);
-  }, 5000);
-
-  const purgeInterval = setInterval(() => {
-    void (async () => {
-      try {
-        const db = await getDb();
-        await purgeStaleUnverifiedUsers(db);
-      } catch (e) {
-        console.error("Failed to purge unverified users:", e);
-      }
-    })();
-  }, 60 * 60 * 1000);
-
-  const noncePurgeInterval = setInterval(() => {
-    void (async () => {
-      try {
-        const db = await getDb();
-        await db.run("DELETE FROM oauth_nonces WHERE timestamp < ?", Date.now() - 20 * 60 * 1000);
-      } catch (e) {
-        console.error("Failed to purge OAuth nonces:", e);
-      }
-    })();
-  }, 10 * 60 * 1000);
+  const intervals = scheduleBackgroundJobs(config, getDb, decryptSecretOrEmpty);
 
   const shutdown = () => {
     console.log("Shutting down gracefully...");
-    clearInterval(syncInterval);
-    clearInterval(purgeInterval);
-    clearInterval(noncePurgeInterval);
+    for (const interval of intervals) {
+      clearInterval(interval);
+    }
     server.close(() => {
       console.log("Closed out remaining connections.");
       void init.db.close?.();
@@ -146,7 +165,7 @@ async function startServer() {
     setTimeout(() => {
       console.error("Could not close connections in time, forcefully shutting down");
       process.exit(1);
-    }, 10000);
+    }, config.http.shutdownTimeoutMs);
   };
 
   process.on("SIGTERM", shutdown);

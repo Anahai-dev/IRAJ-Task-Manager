@@ -1,6 +1,4 @@
-const FETCH_TIMEOUT_MS = 8000;
-const MAX_PAGES = 10;
-const PER_PAGE = 100;
+import { getGitApiConfig } from "./runtime-config.ts";
 
 export interface GitBranch {
   name: string;
@@ -12,7 +10,7 @@ export interface GitBranch {
 }
 
 async function fetchJson(url: string, init: RequestInit): Promise<{ ok: boolean; status: number; data: unknown; text: string }> {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(getGitApiConfig().fetchTimeoutMs) });
   const text = await res.text();
   let data: unknown = text;
   try {
@@ -35,8 +33,9 @@ export async function listGithubBranches(opts: {
     Authorization: `Bearer ${opts.token}`,
   };
   const branches: GitBranch[] = [];
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const url = `https://api.github.com/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(opts.name)}/branches?per_page=${PER_PAGE}&page=${page}`;
+  const api = getGitApiConfig();
+  for (let page = 1; page <= api.maxPages; page++) {
+    const url = `https://api.github.com/repos/${encodeURIComponent(opts.owner)}/${encodeURIComponent(opts.name)}/branches?per_page=${api.perPage}&page=${page}`;
     const result = await fetchJson(url, { headers });
     if (!result.ok) {
       throw new Error(`GitHub API Error (${result.status}): ${result.text}`);
@@ -53,7 +52,7 @@ export async function listGithubBranches(opts: {
         isDefault: name === opts.defaultBranch,
       });
     }
-    if (raw.length < PER_PAGE) break;
+    if (raw.length < api.perPage) break;
   }
   return branches;
 }

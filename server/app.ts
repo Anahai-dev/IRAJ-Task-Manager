@@ -7,6 +7,8 @@ import rateLimit from "express-rate-limit";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import type { AppConfig } from "./config.ts";
+import { gitlabOrigin } from "./config.ts";
+import { setGitApiConfig, gitApiConfigFromApp } from "./git/runtime-config.ts";
 import type { DatabaseWrapper } from "./types.ts";
 import { createSecretCipher } from "./auth/crypto.ts";
 import { createAuthenticateToken } from "./auth/middleware.ts";
@@ -33,12 +35,14 @@ export interface CreateAppOptions {
 export async function createApp(options: CreateAppOptions): Promise<Express> {
   const { config, getDb } = options;
   const serveFrontend = options.serveFrontend !== false;
-  const { encryptSecret, decryptSecretOrEmpty } = createSecretCipher(config.tokenEncryptionKey);
+  const { encryptSecret, decryptSecretOrEmpty } = createSecretCipher(config.security.tokenEncryptionKey);
+
+  setGitApiConfig(gitApiConfigFromApp(config));
 
   const app = express();
-  app.set("trust proxy", 1);
+  app.set("trust proxy", config.http.trustProxy);
 
-  const authenticateToken = createAuthenticateToken({ getDb, secretKey: config.secretKey });
+  const authenticateToken = createAuthenticateToken({ getDb, config });
   setRuntime({
     getDb,
     config,
@@ -47,17 +51,14 @@ export async function createApp(options: CreateAppOptions): Promise<Express> {
     authenticateToken,
   });
 
-  app.use(morgan(config.isProduction ? "combined" : "dev"));
+  app.use(morgan(config.logging.morganFormat));
 
   app.use((_req: Request, res: Response, next: NextFunction) => {
-    res.locals.cspNonce = crypto.randomBytes(16).toString("base64");
+    res.locals.cspNonce = crypto.randomBytes(config.security.cspNonceBytes).toString("base64");
     next();
   });
 
-  const gitlabOrigin =
-    process.env.GITLAB_URL && /^https?:\/\//i.test(process.env.GITLAB_URL)
-      ? new URL(process.env.GITLAB_URL).origin
-      : null;
+  const gitlabOriginUrl = gitlabOrigin(config.oauth.gitlabUrl);
 
   const cspImgSrc = [
     "'self'",
@@ -69,8 +70,8 @@ export async function createApp(options: CreateAppOptions): Promise<Express> {
     "https://*.gitlab.com",
     "https://secure.gravatar.com",
   ];
-  if (gitlabOrigin && !cspImgSrc.includes(gitlabOrigin)) {
-    cspImgSrc.push(gitlabOrigin);
+  if (gitlabOriginUrl && !cspImgSrc.includes(gitlabOriginUrl)) {
+    cspImgSrc.push(gitlabOriginUrl);
   }
 
   const cspConnectSrc = [
@@ -82,53 +83,52 @@ export async function createApp(options: CreateAppOptions): Promise<Express> {
     "https://www.googleapis.com",
     "https://*.googleapis.com",
   ];
-  if (gitlabOrigin && !cspConnectSrc.includes(gitlabOrigin)) {
-    cspConnectSrc.push(gitlabOrigin);
+  if (gitlabOriginUrl && !cspConnectSrc.includes(gitlabOriginUrl)) {
+    cspConnectSrc.push(gitlabOriginUrl);
   }
 
   app.use(
     helmet({
-      contentSecurityPolicy: config.isProduction
-        ? {
-            directives: {
-              defaultSrc: ["'self'"],
-              scriptSrc: ["'self'", (_req: Request, res: Response) => `'nonce-${res.locals.cspNonce}'`],
-              styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-              fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
-              imgSrc: cspImgSrc,
-              connectSrc: cspConnectSrc,
-              frameSrc: ["'self'"],
-            },
-          }
-        : false,
-      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy:
+        config.isProduction && config.security.cspEnabledInProduction
+          ? {
+              directives: {
+                defaultSrc: ["'self'"],
+                scriptSrc: ["'self'", (_req: Request, res: Response) => `'nonce-${res.locals.cspNonce}'`],
+                styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+                fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+                imgSrc: cspImgSrc,
+                connectSrc: cspConnectSrc,
+                frameSrc: ["'self'"],
+              },
+            }
+          : false,
+      crossOriginEmbedderPolicy: config.security.crossOriginEmbedderPolicy,
     })
   );
 
   app.use(compression());
 
   const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 1000,
+    windowMs: config.rateLimit.api.windowMs,
+    max: config.rateLimit.api.max,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
-    message: { error: "Too many requests from this IP, please try again after 15 minutes" },
+    message: { error: config.rateLimit.api.message },
   });
   app.use("/api/", apiLimiter);
 
   const authLimiter = rateLimit({
-    windowMs: 60 * 1000 * 60,
-    max: 50,
+    windowMs: config.rateLimit.auth.windowMs,
+    max: config.rateLimit.auth.max,
     validate: { xForwardedForHeader: false },
-    message: { error: "Too many auth attempts from this IP, please try again after an hour" },
+    message: { error: config.rateLimit.auth.message },
   });
   app.use("/api/auth/", (req, res, next) => {
-    const skip =
-      req.path === "/me" ||
-      req.path.endsWith("/callback") ||
-      req.path.endsWith("/callback/") ||
-      req.path.endsWith("/url");
+    const skip = config.rateLimit.auth.excludedPathSuffixes.some(
+      (suffix) => req.path === suffix || req.path.endsWith(suffix)
+    );
     if (skip) {
       next();
       return;
@@ -136,7 +136,7 @@ export async function createApp(options: CreateAppOptions): Promise<Express> {
     authLimiter(req, res, next);
   });
 
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: config.http.jsonBodyLimit }));
   app.use(cookieParser());
 
   app.use("/api/health", healthRouter());

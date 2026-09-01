@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import request from "supertest";
-import { loadConfig, isConfiguredPostgresUrl } from "../server/config.ts";
+import { CONFIG_DEFAULTS, buildConfig, loadConfig, isConfiguredPostgresUrl } from "../server/config.ts";
 import { DatabaseInitError, initDb } from "../server/db/index.ts";
 import { createApp } from "../server/app.ts";
 import { resolveOAuthUser, OAuthSignupDisabledError } from "../server/auth/oauth.ts";
@@ -14,19 +14,83 @@ function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "iraj-test-"));
 }
 
-async function makeApp(dir: string) {
-  process.env.NODE_ENV = "test";
-  process.env.SECRET_KEY = "test-secret-key-for-unit-tests-only";
-  process.env.TOKEN_ENCRYPTION_KEY = "test-pat-encryption-key-distinct";
-  process.env.ALLOW_PUBLIC_REGISTER = "true";
-  process.env.OAUTH_AUTO_PROVISION = "false";
-  delete process.env.DATABASE_URL;
-  process.env.SQLITE_PATH = path.join(dir, "database.sqlite");
-  const config = loadConfig();
+function testEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: "test",
+    SECRET_KEY: "test-secret-key-for-unit-tests-only",
+    TOKEN_ENCRYPTION_KEY: "test-pat-encryption-key-distinct",
+    ALLOW_PUBLIC_REGISTER: "true",
+    OAUTH_AUTO_PROVISION: "false",
+    DATABASE_URL: undefined,
+    ...overrides,
+  };
+}
+
+async function makeApp(dir: string, envOverrides: Record<string, string | undefined> = {}) {
+  const env = testEnv({ SQLITE_PATH: path.join(dir, "database.sqlite"), ...envOverrides });
+  const config = loadConfig(env);
   const init = await initDb(config);
   const app = await createApp({ config, getDb: async () => init.db, serveFrontend: false });
   return { app, db: init.db, config };
 }
+
+describe("configuration", () => {
+  test("CONFIG_DEFAULTS exposes documented operator knobs", () => {
+    assert.equal(CONFIG_DEFAULTS.http.port, 3000);
+    assert.equal(CONFIG_DEFAULTS.rateLimit.api.max, 1000);
+    assert.equal(CONFIG_DEFAULTS.rateLimit.auth.max, 50);
+    assert.equal(CONFIG_DEFAULTS.git.prSyncIntervalMs, 5 * 60 * 1000);
+    assert.equal(CONFIG_DEFAULTS.auth.bcryptRounds, 10);
+    assert.equal(CONFIG_DEFAULTS.http.jsonBodyLimit, "10mb");
+  });
+
+  test("buildConfig applies env overrides for http and rate limits", () => {
+    const config = buildConfig(
+      testEnv({
+        PORT: "4001",
+        HOST: "127.0.0.1",
+        RATE_LIMIT_API_MAX: "42",
+        GIT_PR_SYNC_INTERVAL_MS: "120000",
+        BCRYPT_ROUNDS: "12",
+        JSON_BODY_LIMIT: "5mb",
+      })
+    );
+    assert.equal(config.http.port, 4001);
+    assert.equal(config.http.host, "127.0.0.1");
+    assert.equal(config.rateLimit.api.max, 42);
+    assert.equal(config.git.prSyncIntervalMs, 120000);
+    assert.equal(config.auth.bcryptRounds, 12);
+    assert.equal(config.http.jsonBodyLimit, "5mb");
+  });
+
+  test("production fails fast without SECRET_KEY", () => {
+    assert.throws(
+      () =>
+        buildConfig({
+          NODE_ENV: "production",
+          SECRET_KEY: "",
+          TOKEN_ENCRYPTION_KEY: "distinct-key",
+          APP_URL: "https://tasks.example.com",
+          DATABASE_URL: "postgres://user:pass@db.example:5432/app",
+        }),
+      /SECRET_KEY/
+    );
+  });
+
+  test("production fails fast when TOKEN_ENCRYPTION_KEY matches SECRET_KEY", () => {
+    assert.throws(
+      () =>
+        buildConfig({
+          NODE_ENV: "production",
+          SECRET_KEY: "same-secret-value",
+          TOKEN_ENCRYPTION_KEY: "same-secret-value",
+          APP_URL: "https://tasks.example.com",
+          DATABASE_URL: "postgres://user:pass@db.example:5432/app",
+        }),
+      /TOKEN_ENCRYPTION_KEY/
+    );
+  });
+});
 
 describe("P0/P1 API", { concurrency: 1 }, () => {
 test("isConfiguredPostgresUrl treats placeholder and empty as unset", () => {
@@ -38,12 +102,11 @@ test("isConfiguredPostgresUrl treats placeholder and empty as unset", () => {
 
 test("P0-01: DATABASE_URL postgres fails fast instead of falling back to SQLite", async () => {
   const dir = tempDir();
-  process.env.NODE_ENV = "test";
-  process.env.SECRET_KEY = "test-secret-key-for-unit-tests-only";
-  process.env.TOKEN_ENCRYPTION_KEY = "test-pat-encryption-key-distinct";
-  process.env.DATABASE_URL = "postgres://iraj:iraj@127.0.0.1:1/iraj_missing";
-  process.env.SQLITE_PATH = path.join(dir, "database.sqlite");
-  const config = loadConfig();
+  const env = testEnv({
+    DATABASE_URL: "postgres://iraj:iraj@127.0.0.1:1/iraj_missing",
+    SQLITE_PATH: path.join(dir, "database.sqlite"),
+  });
+  const config = loadConfig(env);
   await assert.rejects(() => initDb(config), (err: unknown) => {
     assert.ok(err instanceof DatabaseInitError);
     assert.match((err as Error).message, /PostgreSQL is configured/);
@@ -98,10 +161,11 @@ test("ALLOW_PUBLIC_REGISTER=false blocks non-first registration", async () => {
   });
   await db.close?.();
 
-  process.env.ALLOW_PUBLIC_REGISTER = "false";
-  process.env.SQLITE_PATH = path.join(dir, "database.sqlite");
-  delete process.env.DATABASE_URL;
-  const config = loadConfig();
+  const env = testEnv({
+    ALLOW_PUBLIC_REGISTER: "false",
+    SQLITE_PATH: path.join(dir, "database.sqlite"),
+  });
+  const config = loadConfig(env);
   const init = await initDb(config);
   const app2 = await createApp({ config, getDb: async () => init.db, serveFrontend: false });
   const third = await request(app2).post("/api/auth/register").send({
@@ -115,13 +179,13 @@ test("ALLOW_PUBLIC_REGISTER=false blocks non-first registration", async () => {
 });
 
 test("P0-05: OAuth does not auto-provision when OAUTH_AUTO_PROVISION is false", async () => {
-  const { db } = await makeApp(tempDir());
+  const { db, config } = await makeApp(tempDir());
   await assert.rejects(
     () =>
       resolveOAuthUser(
         db,
         { email: "new@oauth.test", name: "New User", provider: "google" },
-        { autoProvision: false, allowedDomains: [] }
+        { autoProvision: false, allowedDomains: [], bcryptRounds: config.auth.bcryptRounds }
       ),
     (err: unknown) => {
       assert.ok(err instanceof OAuthSignupDisabledError);
@@ -134,16 +198,16 @@ test("P0-05: OAuth does not auto-provision when OAUTH_AUTO_PROVISION is false", 
 });
 
 test("existing OAuth user can still be resolved for login", async () => {
-  const { db } = await makeApp(tempDir());
+  const { db, config } = await makeApp(tempDir());
   const created = await resolveOAuthUser(
     db,
     { email: "git@oauth.test", name: "Git User", provider: "github" },
-    { autoProvision: true, allowedDomains: [] }
+    { autoProvision: true, allowedDomains: [], bcryptRounds: config.auth.bcryptRounds }
   );
   const again = await resolveOAuthUser(
     db,
     { email: "git@oauth.test", name: "Git User", provider: "github" },
-    { autoProvision: false, allowedDomains: [] }
+    { autoProvision: false, allowedDomains: [], bcryptRounds: config.auth.bcryptRounds }
   );
   assert.equal(again.id, created.id);
   await db.close?.();

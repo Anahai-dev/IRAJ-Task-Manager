@@ -1,25 +1,25 @@
 import type { CookieOptions, Response } from "express";
-import { AUTH_COOKIE_NAME } from "../config.ts";
+import type { CookieConfig } from "../config.ts";
 
-export function getCookieOptions(isProduction: boolean): CookieOptions {
+export function getCookieOptions(cookie: CookieConfig): CookieOptions {
   return {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    httpOnly: cookie.httpOnly,
+    secure: cookie.secure,
+    sameSite: cookie.sameSite,
+    path: cookie.path,
+    maxAge: cookie.maxAgeMs,
   };
 }
 
-export function setAuthCookie(res: Response, token: string, isProduction: boolean): void {
-  res.cookie(AUTH_COOKIE_NAME, token, getCookieOptions(isProduction));
+export function setAuthCookie(res: Response, token: string, cookie: CookieConfig): void {
+  res.cookie(cookie.name, token, getCookieOptions(cookie));
 }
 
-export function clearAuthCookie(res: Response, isProduction: boolean): void {
-  res.clearCookie(AUTH_COOKIE_NAME, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: "lax",
-    path: "/",
+export function clearAuthCookie(res: Response, cookie: CookieConfig): void {
+  res.clearCookie(cookie.name, {
+    httpOnly: cookie.httpOnly,
+    secure: cookie.secure,
+    sameSite: cookie.sameSite,
+    path: cookie.path,
   });
 }

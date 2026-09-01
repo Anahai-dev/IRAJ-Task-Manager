@@ -181,7 +181,7 @@ router.get("/api/projects/:id/activity", auth, async (req: any, res: any) => {
     JOIN tasks t ON a.taskId = t.id
     WHERE t.projectId = ?
     ORDER BY a.createdAt DESC
-    LIMIT 50
+    LIMIT ${R().config.git.projectActivityLimit}
   `, req.params.id);
   
   res.json(activities);
@@ -414,7 +414,7 @@ router.post("/api/projects/:id/git/branches", auth, async (req: any, res: any) =
         };
 
         // 1. Get SHA of base branch
-        const baseRefRes = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/ref/heads/${targetBaseBranch}`, { headers, signal: AbortSignal.timeout(8000) });
+        const baseRefRes = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/ref/heads/${targetBaseBranch}`, { headers, signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs) });
         if (!baseRefRes.ok) {
           let errMsg = `Failed to find base branch '${targetBaseBranch}' on GitHub`;
           try {
@@ -432,7 +432,7 @@ router.post("/api/projects/:id/git/branches", auth, async (req: any, res: any) =
         const createRefRes = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/refs`, {
           method: 'POST',
           headers,
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs),
           body: JSON.stringify({
             ref: `refs/heads/${branchName}`,
             sha
@@ -459,7 +459,7 @@ router.post("/api/projects/:id/git/branches", auth, async (req: any, res: any) =
         remoteCreated = true;
         remoteUrl = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/tree/${encodeURIComponent(branchName)}`;
       } else if (provider === 'gitlab') {
-        const gitlabUrl = process.env.GITLAB_URL || 'https://gitlab.com';
+        const gitlabUrl = R().config.oauth.gitlabUrl;
         const encodedProjectPath = encodeURIComponent(`${owner}/${name}`);
         
         const glRes = await fetch(`${gitlabUrl}/api/v4/projects/${encodedProjectPath}/repository/branches`, {
@@ -468,7 +468,7 @@ router.post("/api/projects/:id/git/branches", auth, async (req: any, res: any) =
             'Content-Type': 'application/json',
             'PRIVATE-TOKEN': token
           },
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs),
           body: JSON.stringify({
             branch: branchName,
             ref: targetBaseBranch
@@ -587,7 +587,7 @@ router.post("/api/projects/:id/git/pull-requests", auth, async (req: any, res: a
     if (provider === 'github') {
       prUrl = `https://github.com/${encodeURIComponent(owner || 'owner')}/${encodeURIComponent(name || 'repo')}/compare/${encodeURIComponent(baseBranch)}...${encodeURIComponent(sourceBranch)}?expand=1`;
     } else {
-      const gitlabUrl = process.env.GITLAB_URL || 'https://gitlab.com';
+      const gitlabUrl = R().config.oauth.gitlabUrl;
       prUrl = `${gitlabUrl}/${encodeURIComponent(owner || 'owner')}/${encodeURIComponent(name || 'repo')}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${encodeURIComponent(sourceBranch)}&merge_request%5Btarget_branch%5D=${encodeURIComponent(baseBranch)}`;
     }
   } else {
@@ -601,7 +601,7 @@ router.post("/api/projects/:id/git/pull-requests", auth, async (req: any, res: a
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
           },
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs),
           body: JSON.stringify({
             title: title || `[Task] ${sourceBranch}`,
             head: sourceBranch,
@@ -618,7 +618,7 @@ router.post("/api/projects/:id/git/pull-requests", auth, async (req: any, res: a
         const ghData = await ghRes.json();
         prUrl = ghData.html_url;
       } else if (provider === 'gitlab') {
-        const gitlabUrl = process.env.GITLAB_URL || 'https://gitlab.com';
+        const gitlabUrl = R().config.oauth.gitlabUrl;
         const encodedProjectPath = encodeURIComponent(`${owner}/${name}`);
 
         const glRes = await fetch(`${gitlabUrl}/api/v4/projects/${encodedProjectPath}/merge_requests`, {
@@ -627,7 +627,7 @@ router.post("/api/projects/:id/git/pull-requests", auth, async (req: any, res: a
             'Content-Type': 'application/json',
             'PRIVATE-TOKEN': token
           },
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs),
           body: JSON.stringify({
             title: title || `[Task] ${sourceBranch}`,
             source_branch: sourceBranch,
@@ -651,7 +651,7 @@ router.post("/api/projects/:id/git/pull-requests", auth, async (req: any, res: a
       if (provider === 'github') {
         prUrl = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${encodeURIComponent(baseBranch)}...${encodeURIComponent(sourceBranch)}?expand=1`;
       } else {
-        const gitlabUrl = process.env.GITLAB_URL || 'https://gitlab.com';
+        const gitlabUrl = R().config.oauth.gitlabUrl;
         prUrl = `${gitlabUrl}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${encodeURIComponent(sourceBranch)}&merge_request%5Btarget_branch%5D=${encodeURIComponent(baseBranch)}`;
       }
     }
@@ -785,7 +785,7 @@ router.post("/api/projects/:id/git/pull-requests/sync", auth, async (req: any, r
           'Accept': 'application/vnd.github.v3+json',
           'Authorization': `Bearer ${token}`
         };
-        const ghRes = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${prNumber}`, { headers, signal: AbortSignal.timeout(8000) });
+        const ghRes = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${prNumber}`, { headers, signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs) });
         if (ghRes.ok) {
           const ghData = await ghRes.json();
           remoteMerged = ghData.merged || false;
@@ -797,10 +797,10 @@ router.post("/api/projects/:id/git/pull-requests/sync", auth, async (req: any, r
           errors.push(`GitHub error for task ${task.title}: ${ghRes.statusText}`);
         }
       } else if (provider === 'gitlab') {
-        const gitlabUrl = process.env.GITLAB_URL || 'https://gitlab.com';
+        const gitlabUrl = R().config.oauth.gitlabUrl;
         const encodedProjectPath = encodeURIComponent(`${owner}/${name}`);
         const headers = { 'PRIVATE-TOKEN': token };
-        const glRes = await fetch(`${gitlabUrl}/api/v4/projects/${encodedProjectPath}/merge_requests/${prNumber}`, { headers, signal: AbortSignal.timeout(8000) });
+        const glRes = await fetch(`${gitlabUrl}/api/v4/projects/${encodedProjectPath}/merge_requests/${prNumber}`, { headers, signal: AbortSignal.timeout(R().config.git.api.fetchTimeoutMs) });
         if (glRes.ok) {
           const glData = await glRes.json();
           const glState = glData.state; // 'opened', 'closed', 'merged', 'locked'

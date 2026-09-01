@@ -1,7 +1,6 @@
 import crypto from "crypto";
 import type { DatabaseWrapper } from "../types.ts";
 import { getAppUrl, type AppConfig } from "../config.ts";
-import { hashPassword } from "./passwords.ts";
 
 export class OAuthSignupDisabledError extends Error {
   constructor(message = "No account exists for this email. Ask an administrator to provision an account before signing in with OAuth.") {
@@ -111,7 +110,7 @@ export async function verifyOAuthState(
     if (!parsed || parsed.provider !== provider || !parsed.sig || !parsed.timestamp || !parsed.redirectUri || !parsed.nonce) {
       throw new Error("Malformed OAuth state parameter.");
     }
-    if (Date.now() - parseInt(parsed.timestamp, 10) > 15 * 60 * 1000) {
+    if (Date.now() - parseInt(parsed.timestamp, 10) > config.oauth.stateTtlMs) {
       throw new Error("OAuth state parameter has expired. Please try signing in again.");
     }
     const existingNonce = await db.get("SELECT nonce FROM oauth_nonces WHERE nonce = ?", parsed.nonce);
@@ -148,6 +147,7 @@ export interface OAuthProfile {
 export interface ResolveOAuthUserOptions {
   autoProvision: boolean;
   allowedDomains: string[];
+  bcryptRounds: number;
 }
 
 /**
@@ -172,7 +172,8 @@ export async function resolveOAuthUser(
     const id = uuidv4();
     const role = "developer";
     const randomPassword = crypto.randomBytes(32).toString("hex");
-    const hash = await hashPassword(randomPassword);
+    const { hashPassword } = await import("./passwords.ts");
+    const hash = await hashPassword(randomPassword, options.bcryptRounds);
     await db.run(
       "INSERT INTO users (id, name, email, passwordHash, role, tokenVersion, authProvider, emailVerified, status) VALUES (?, ?, ?, ?, ?, 1, ?, 1, 'Available')",
       [id, profile.name, email, hash, role, profile.provider]

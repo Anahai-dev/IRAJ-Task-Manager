@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 
-export async function hashPassword(password: string): Promise<string> {
-  const salt = await bcrypt.genSalt(10);
+export async function hashPassword(password: string, bcryptRounds: number): Promise<string> {
+  const salt = await bcrypt.genSalt(bcryptRounds);
   return bcrypt.hash(password, salt);
 }
 
@@ -13,6 +13,6 @@ export function isValidEmail(email: unknown): email is string {
   return typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-export function isValidPassword(password: unknown): password is string {
-  return typeof password === "string" && password.length >= 8;
+export function isValidPassword(password: unknown, minLength: number): password is string {
+  return typeof password === "string" && password.length >= minLength;
 }

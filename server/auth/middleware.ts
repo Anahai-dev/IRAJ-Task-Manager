@@ -1,14 +1,16 @@
 import type { NextFunction, Request, Response } from "express";
-import { AUTH_COOKIE_NAME } from "../config.ts";
+import type { AppConfig } from "../config.ts";
 import type { AuthUser, DatabaseWrapper } from "../types.ts";
 import { verifyAuthToken } from "./jwt.ts";
 
 export function createAuthenticateToken(opts: {
   getDb: () => Promise<DatabaseWrapper>;
-  secretKey: string;
+  config: Pick<AppConfig, "security" | "auth">;
 }) {
+  const cookieName = opts.config.auth.cookie.name;
+
   return (req: Request, res: Response, next: NextFunction): void => {
-    const token = req.cookies?.[AUTH_COOKIE_NAME];
+    const token = req.cookies?.[cookieName];
     if (!token) {
       res.sendStatus(401);
       return;
@@ -16,7 +18,7 @@ export function createAuthenticateToken(opts: {
 
     let decodedUser: { id: string; tokenVersion?: number } | null = null;
     try {
-      decodedUser = verifyAuthToken(token, opts.secretKey);
+      decodedUser = verifyAuthToken(token, opts.config.security.secretKey, opts.config.auth.jwt.algorithm);
     } catch {
       res.sendStatus(403);
       return;

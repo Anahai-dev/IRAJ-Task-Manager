@@ -65,8 +65,8 @@ router.put("/api/users/me/password", auth, async (req: any, res: any) => {
     return res.status(400).json({ error: "Current and new passwords are required." });
   }
 
-  if (typeof newPassword !== 'string' || newPassword.length < 8) {
-    return res.status(400).json({ error: "New password must be at least 8 characters long." });
+  if (typeof newPassword !== 'string' || newPassword.length < R().config.auth.passwordMinLength) {
+    return res.status(400).json({ error: `New password must be at least ${R().config.auth.passwordMinLength} characters long.` });
   }
 
   const user = await db.get("SELECT passwordHash, tokenVersion, role FROM users WHERE id = ?", req.user.id);
@@ -74,12 +74,17 @@ router.put("/api/users/me/password", auth, async (req: any, res: any) => {
     return res.status(400).json({ error: "Incorrect current password." });
   }
 
-  const passwordHash = await hashPassword(newPassword);
+  const passwordHash = await hashPassword(newPassword, R().config.auth.bcryptRounds);
   const nextTokenVersion = (user.tokenVersion || 1) + 1;
   await db.run("UPDATE users SET passwordHash = ?, tokenVersion = ? WHERE id = ?", [passwordHash, nextTokenVersion, req.user.id]);
   
-  const newToken = signAuthToken({ id: req.user.id, role: user.role, tokenVersion: nextTokenVersion }, R().config.secretKey);
-  setAuthCookie(res, newToken, R().config.isProduction);
+  const newToken = signAuthToken(
+    { id: req.user.id, role: user.role, tokenVersion: nextTokenVersion },
+    R().config.security.secretKey,
+    R().config.auth.jwt.expiresIn,
+    R().config.auth.jwt.algorithm
+  );
+  setAuthCookie(res, newToken, R().config.auth.cookie);
   res.json({ success: true });
 });
 
@@ -229,8 +234,8 @@ router.post("/api/users", auth, async (req: any, res: any) => {
   const provider = ["google", "github", "gitlab", "local"].includes(authProvider) ? authProvider : "local";
   if (provider === "local") {
     if (!password) return res.status(400).json({ error: "Missing required fields." });
-    if (typeof password !== 'string' || password.length < 8) {
-      return res.status(400).json({ error: "Password must be at least 8 characters long." });
+    if (typeof password !== 'string' || password.length < R().config.auth.passwordMinLength) {
+      return res.status(400).json({ error: `Password must be at least ${R().config.auth.passwordMinLength} characters long.` });
     }
   }
   if (email) email = email.toLowerCase().trim();
@@ -247,7 +252,8 @@ router.post("/api/users", auth, async (req: any, res: any) => {
   const finalRole = roleExists ? role : "developer";
 
   const passwordHash = await hashPassword(
-    provider === "local" ? password : `${Date.now()}-${Math.random()}-${req.user.id}`
+    provider === "local" ? password : `${Date.now()}-${Math.random()}-${req.user.id}`,
+    R().config.auth.bcryptRounds
   );
   const id = uuidv4();
 
@@ -328,10 +334,10 @@ router.put("/api/users/:id", auth, async (req: any, res: any) => {
   const statusVal = status || "Available";
 
   if (password) {
-    if (typeof password !== 'string' || password.length < 8) {
-      return res.status(400).json({ error: "Password must be at least 8 characters long." });
+    if (typeof password !== 'string' || password.length < R().config.auth.passwordMinLength) {
+      return res.status(400).json({ error: `Password must be at least ${R().config.auth.passwordMinLength} characters long.` });
     }
-    const passwordHash = await hashPassword(password);
+    const passwordHash = await hashPassword(password, R().config.auth.bcryptRounds);
     await db.run(
       "UPDATE users SET name = ?, email = ?, role = ?, passwordHash = ?, rolePrefix = ?, status = ?, tokenVersion = COALESCE(tokenVersion, 1) + 1 WHERE id = ?",
       [name, email, role, passwordHash, rolePrefix || null, statusVal, req.params.id]

@@ -8,7 +8,6 @@ import { getAppUrl } from "../config.ts";
 import { hashPassword, isValidEmail, isValidPassword, verifyPassword } from "../auth/passwords.ts";
 import { signAuthToken, verifyAuthToken } from "../auth/jwt.ts";
 import { clearAuthCookie, setAuthCookie } from "../auth/cookies.ts";
-import { AUTH_COOKIE_NAME } from "../config.ts";
 import {
   createSignedOAuthState,
   getSafeOAuthRedirectUri,
@@ -41,13 +40,13 @@ function oauthSuccessHtml(nonce: string, user: { id: string; name: string; email
     `;
 }
 
-function oauthErrorHtml(nonce: string, title: string, message: string, hint: string): string {
+function oauthErrorHtml(nonce: string, title: string, message: string, hint: string, closeDelayMs: number): string {
   return `
       <!DOCTYPE html>
       <html><body>
         <p>${escapeHtml(title)}: ${escapeHtml(message)}</p>
         <p>${escapeHtml(hint)}</p>
-        <script nonce="${nonce}">setTimeout(() => window.close(), 5000);</script>
+        <script nonce="${nonce}">setTimeout(() => window.close(), ${closeDelayMs});</script>
       </body></html>
     `;
 }
@@ -59,6 +58,7 @@ export function authRouter(): Router {
     "/register",
     asyncHandler(async (req, res) => {
       let { name, email, password } = req.body as { name?: unknown; email?: unknown; password?: unknown };
+      const config = R().config;
 
       if (!name || typeof name !== "string" || name.trim() === "") {
         res.status(400).json({ error: "Name is required and must be a valid string." });
@@ -68,14 +68,13 @@ export function authRouter(): Router {
         res.status(400).json({ error: "A valid email address is required." });
         return;
       }
-      if (!isValidPassword(password)) {
-        res.status(400).json({ error: "Password must be at least 8 characters long." });
+      if (!isValidPassword(password, config.auth.passwordMinLength)) {
+        res.status(400).json({ error: `Password must be at least ${config.auth.passwordMinLength} characters long.` });
         return;
       }
 
       email = email.toLowerCase().trim();
       const db = await R().getDb();
-      const config = R().config;
 
       try {
         const result = await db.transaction(async (tx) => {
@@ -85,8 +84,8 @@ export function authRouter(): Router {
               existing.authProvider === "local" &&
               (existing.emailVerified === 0 || existing.emailVerified === false)
             ) {
-              const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-              if (existing.createdAt && String(existing.createdAt) > oneDayAgo) {
+              const cooldownAgo = new Date(Date.now() - config.auth.pendingRegistrationCooldownMs).toISOString();
+              if (existing.createdAt && String(existing.createdAt) > cooldownAgo) {
                 throw new Error("Email is already registered and pending verification. Please wait 24 hours before re-registering.");
               }
               await tx.run("DELETE FROM users WHERE id = ?", existing.id);
@@ -97,11 +96,11 @@ export function authRouter(): Router {
 
           const userCount = await tx.get<{ count: number | string }>("SELECT COUNT(*) as count FROM users");
           const isFirstUser = parseInt(String(userCount?.count ?? 0), 10) === 0;
-          if (!isFirstUser && !config.allowPublicRegister) {
+          if (!isFirstUser && !config.registration.allowPublicRegister) {
             throw new Error("REGISTRATION_DISABLED");
           }
 
-          const passwordHash = await hashPassword(password);
+          const passwordHash = await hashPassword(password, config.auth.bcryptRounds);
           const id = uuidv4();
           const createdAt = new Date().toISOString();
           const assignedRole = isFirstUser ? "super_admin" : "developer";
@@ -116,8 +115,13 @@ export function authRouter(): Router {
         });
 
         if (result.emailVerified === 1) {
-          const token = signAuthToken({ id: result.id, role: result.role, tokenVersion: 1 }, config.secretKey);
-          setAuthCookie(res, token, config.isProduction);
+          const token = signAuthToken(
+            { id: result.id, role: result.role, tokenVersion: 1 },
+            config.security.secretKey,
+            config.auth.jwt.expiresIn,
+            config.auth.jwt.algorithm
+          );
+          setAuthCookie(res, token, config.auth.cookie);
           res.json({ user: { id: result.id, name: result.name, email: result.email, role: result.role, rolePrefix: "" } });
           return;
         }
@@ -179,8 +183,13 @@ export function authRouter(): Router {
         return;
       }
       const tokenVersion = Number(user.tokenVersion || 1);
-      const token = signAuthToken({ id: String(user.id), role: String(user.role), tokenVersion }, R().config.secretKey);
-      setAuthCookie(res, token, R().config.isProduction);
+      const token = signAuthToken(
+        { id: String(user.id), role: String(user.role), tokenVersion },
+        R().config.security.secretKey,
+        R().config.auth.jwt.expiresIn,
+        R().config.auth.jwt.algorithm
+      );
+      setAuthCookie(res, token, R().config.auth.cookie);
       res.json({
         user: {
           id: user.id,
@@ -199,12 +208,12 @@ export function authRouter(): Router {
       try {
         const authHeader = req.headers.authorization;
         const rawBearer = authHeader && authHeader.startsWith("Bearer ") ? authHeader.split(" ")[1] : null;
-        const cookieToken = req.cookies?.[AUTH_COOKIE_NAME];
+        const cookieToken = req.cookies?.[R().config.auth.cookie.name];
         const token =
           rawBearer && rawBearer !== "cookie_authenticated" && rawBearer !== "null" ? rawBearer : cookieToken;
         if (token) {
           try {
-            const decoded = verifyAuthToken(token, R().config.secretKey);
+            const decoded = verifyAuthToken(token, R().config.security.secretKey, R().config.auth.jwt.algorithm);
             if (decoded?.id) {
               const db = await R().getDb();
               await db.run("UPDATE users SET tokenVersion = COALESCE(tokenVersion, 1) + 1 WHERE id = ?", decoded.id);
@@ -216,7 +225,7 @@ export function authRouter(): Router {
       } catch (e) {
         console.error("LOGOUT ERROR:", e);
       } finally {
-        clearAuthCookie(res, R().config.isProduction);
+        clearAuthCookie(res, R().config.auth.cookie);
         res.json({ success: true, message: "Logged out successfully" });
       }
     })
@@ -240,24 +249,25 @@ export function authRouter(): Router {
       }
       const resetToken = crypto.randomBytes(32).toString("hex");
       const tokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
-      const expiresAt = Date.now() + 3600000;
+      const expiresAt = Date.now() + R().config.auth.passwordResetTtlMs;
       await db.run("DELETE FROM password_resets WHERE userId = ?", user.id);
       await db.run("INSERT INTO password_resets (token, userId, expiresAt) VALUES (?, ?, ?)", [tokenHash, user.id, expiresAt]);
       const baseUrl = getAppUrl(req, R().config);
       const resetLink = `${baseUrl}/reset-password/${resetToken}`;
 
-      if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+      const mail = R().config.mail;
+      if (mail.configured) {
         const transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST,
-          port: parseInt(process.env.SMTP_PORT || "587", 10),
-          secure: process.env.SMTP_PORT === "465",
+          host: mail.host,
+          port: mail.port,
+          secure: mail.secure,
           auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS,
+            user: mail.user,
+            pass: mail.pass,
           },
         });
         await transporter.sendMail({
-          from: process.env.SMTP_FROM || '"IRAJ Task Manager" <noreply@example.com>',
+          from: mail.from,
           to: user.email,
           subject: "Password Reset Request",
           text: `You requested a password reset. Click this link to reset your password: ${resetLink}\n\nIf you did not request this, please ignore this email.`,
@@ -284,8 +294,8 @@ export function authRouter(): Router {
         res.status(400).json({ error: "Invalid token." });
         return;
       }
-      if (!isValidPassword(newPassword)) {
-        res.status(400).json({ error: "New password must be at least 8 characters long." });
+      if (!isValidPassword(newPassword, R().config.auth.passwordMinLength)) {
+        res.status(400).json({ error: `New password must be at least ${R().config.auth.passwordMinLength} characters long.` });
         return;
       }
       const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
@@ -299,7 +309,7 @@ export function authRouter(): Router {
         res.status(400).json({ error: "Invalid or expired reset token." });
         return;
       }
-      const hash = await hashPassword(newPassword);
+      const hash = await hashPassword(newPassword, R().config.auth.bcryptRounds);
       await db.run(
         "UPDATE users SET passwordHash = ?, tokenVersion = COALESCE(tokenVersion, 1) + 1, emailVerified = 1 WHERE id = ?",
         [hash, resetRecord.userId]
@@ -311,29 +321,30 @@ export function authRouter(): Router {
 
   router.get("/gitlab/url", (req, res) => {
     const redirectUri = getSafeOAuthRedirectUri(req, "gitlab", R().config);
-    const state = createSignedOAuthState("gitlab", redirectUri, R().config.secretKey);
+    const oauth = R().config.oauth;
+    const state = createSignedOAuthState("gitlab", redirectUri, R().config.security.secretKey);
     const params = new URLSearchParams({
-      client_id: process.env.GITLAB_CLIENT_ID || "",
+      client_id: oauth.gitlab.clientId,
       redirect_uri: redirectUri,
       response_type: "code",
       scope: "read_user",
       state,
     });
-    const gitlabUrl = process.env.GITLAB_URL || "https://gitlab.com";
-    res.json({ url: `${gitlabUrl}/oauth/authorize?${params.toString()}` });
+    res.json({ url: `${oauth.gitlabUrl}/oauth/authorize?${params.toString()}` });
   });
 
   router.get(
     "/gitlab/callback",
     asyncHandler(async (req, res) => {
       const { code, state } = req.query;
-      const gitlabUrl = process.env.GITLAB_URL || "https://gitlab.com";
-      const clientId = process.env.GITLAB_CLIENT_ID || "";
-      const clientSecret = process.env.GITLAB_CLIENT_SECRET || "";
+      const oauth = R().config.oauth;
+      const gitlabUrl = oauth.gitlabUrl;
+      const clientId = oauth.gitlab.clientId;
+      const clientSecret = oauth.gitlab.clientSecret;
       const nonce = String(res.locals.cspNonce || "");
       try {
         const db = await R().getDb();
-        const redirectUri = await verifyOAuthState(db, req, "gitlab", state, R().config.secretKey, R().config);
+        const redirectUri = await verifyOAuthState(db, req, "gitlab", state, R().config.security.secretKey, R().config);
         if (!code) throw new Error("No authorization code provided");
         if (!clientId) throw new Error("GITLAB_CLIENT_ID not configured");
         const tokenRes = await fetch(`${gitlabUrl}/oauth/token`, {
@@ -389,13 +400,15 @@ export function authRouter(): Router {
             name: userData.name || userData.username || "GitLab User",
             provider: "gitlab",
           },
-          { autoProvision: R().config.oauthAutoProvision, allowedDomains: R().config.oauthAllowedDomains }
+          { autoProvision: oauth.autoProvision, allowedDomains: [...oauth.allowedDomains], bcryptRounds: R().config.auth.bcryptRounds }
         );
         const token = signAuthToken(
           { id: user.id, role: user.role, tokenVersion: user.tokenVersion || 1 },
-          R().config.secretKey
+          R().config.security.secretKey,
+          R().config.auth.jwt.expiresIn,
+          R().config.auth.jwt.algorithm
         );
-        setAuthCookie(res, token, R().config.isProduction);
+        setAuthCookie(res, token, R().config.auth.cookie);
         res.send(oauthSuccessHtml(nonce, { id: user.id, name: user.name, email: user.email, role: user.role }));
       } catch (e: unknown) {
         console.error("GitLab OAuth error:", e);
@@ -404,7 +417,8 @@ export function authRouter(): Router {
             nonce,
             "OAuth Error",
             (e as Error).message,
-            "Ensure GITLAB_CLIENT_ID and GITLAB_CLIENT_SECRET are configured."
+            "Ensure GITLAB_CLIENT_ID and GITLAB_CLIENT_SECRET are configured.",
+            R().config.oauth.errorPageCloseDelayMs
           )
         );
       }
@@ -413,9 +427,10 @@ export function authRouter(): Router {
 
   router.get("/google/url", (req, res) => {
     const redirectUri = getSafeOAuthRedirectUri(req, "google", R().config);
-    const state = createSignedOAuthState("google", redirectUri, R().config.secretKey);
+    const oauth = R().config.oauth;
+    const state = createSignedOAuthState("google", redirectUri, R().config.security.secretKey);
     const params = new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID || "",
+      client_id: oauth.google.clientId,
       redirect_uri: redirectUri,
       response_type: "code",
       scope: "openid email profile",
@@ -428,12 +443,13 @@ export function authRouter(): Router {
     ["/google/callback", "/google/callback/"],
     asyncHandler(async (req, res) => {
       const { code, state } = req.query;
-      const clientId = process.env.GOOGLE_CLIENT_ID || "";
-      const clientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
+      const oauth = R().config.oauth;
+      const clientId = oauth.google.clientId;
+      const clientSecret = oauth.google.clientSecret;
       const nonce = String(res.locals.cspNonce || "");
       try {
         const db = await R().getDb();
-        const redirectUri = await verifyOAuthState(db, req, "google", state, R().config.secretKey, R().config);
+        const redirectUri = await verifyOAuthState(db, req, "google", state, R().config.security.secretKey, R().config);
         if (!code) throw new Error("No authorization code provided");
         if (!clientId) throw new Error("GOOGLE_CLIENT_ID not configured");
         const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -474,13 +490,15 @@ export function authRouter(): Router {
             name: userData.name || userData.given_name || "Google User",
             provider: "google",
           },
-          { autoProvision: R().config.oauthAutoProvision, allowedDomains: R().config.oauthAllowedDomains }
+          { autoProvision: oauth.autoProvision, allowedDomains: [...oauth.allowedDomains], bcryptRounds: R().config.auth.bcryptRounds }
         );
         const token = signAuthToken(
           { id: user.id, role: user.role, tokenVersion: user.tokenVersion || 1 },
-          R().config.secretKey
+          R().config.security.secretKey,
+          R().config.auth.jwt.expiresIn,
+          R().config.auth.jwt.algorithm
         );
-        setAuthCookie(res, token, R().config.isProduction);
+        setAuthCookie(res, token, R().config.auth.cookie);
         res.send(oauthSuccessHtml(nonce, { id: user.id, name: user.name, email: user.email, role: user.role }));
       } catch (e: unknown) {
         console.error("Google OAuth error:", e);
@@ -489,7 +507,8 @@ export function authRouter(): Router {
             nonce,
             "Google OAuth Error",
             (e as Error).message,
-            "Ensure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured in the environment variables."
+            "Ensure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are configured in the environment variables.",
+            R().config.oauth.errorPageCloseDelayMs
           )
         );
       }
@@ -498,9 +517,10 @@ export function authRouter(): Router {
 
   router.get("/github/url", (req, res) => {
     const redirectUri = getSafeOAuthRedirectUri(req, "github", R().config);
-    const state = createSignedOAuthState("github", redirectUri, R().config.secretKey);
+    const oauth = R().config.oauth;
+    const state = createSignedOAuthState("github", redirectUri, R().config.security.secretKey);
     const params = new URLSearchParams({
-      client_id: process.env.GITHUB_CLIENT_ID || "",
+      client_id: oauth.github.clientId,
       redirect_uri: redirectUri,
       scope: "user:email",
       state,
@@ -512,12 +532,13 @@ export function authRouter(): Router {
     ["/github/callback", "/github/callback/"],
     asyncHandler(async (req, res) => {
       const { code, state } = req.query;
-      const clientId = process.env.GITHUB_CLIENT_ID || "";
-      const clientSecret = process.env.GITHUB_CLIENT_SECRET || "";
+      const oauth = R().config.oauth;
+      const clientId = oauth.github.clientId;
+      const clientSecret = oauth.github.clientSecret;
       const nonce = String(res.locals.cspNonce || "");
       try {
         const db = await R().getDb();
-        const redirectUri = await verifyOAuthState(db, req, "github", state, R().config.secretKey, R().config);
+        const redirectUri = await verifyOAuthState(db, req, "github", state, R().config.security.secretKey, R().config);
         if (!code) throw new Error("No authorization code provided");
         if (!clientId) throw new Error("GITHUB_CLIENT_ID not configured");
         const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
@@ -561,13 +582,15 @@ export function authRouter(): Router {
         const user = await resolveOAuthUser(
           db,
           { email, name: userData.name || userData.login || "GitHub User", provider: "github" },
-          { autoProvision: R().config.oauthAutoProvision, allowedDomains: R().config.oauthAllowedDomains }
+          { autoProvision: oauth.autoProvision, allowedDomains: [...oauth.allowedDomains], bcryptRounds: R().config.auth.bcryptRounds }
         );
         const token = signAuthToken(
           { id: user.id, role: user.role, tokenVersion: user.tokenVersion || 1 },
-          R().config.secretKey
+          R().config.security.secretKey,
+          R().config.auth.jwt.expiresIn,
+          R().config.auth.jwt.algorithm
         );
-        setAuthCookie(res, token, R().config.isProduction);
+        setAuthCookie(res, token, R().config.auth.cookie);
         res.send(oauthSuccessHtml(nonce, { id: user.id, name: user.name, email: user.email, role: user.role }));
       } catch (e: unknown) {
         console.error("GitHub OAuth error:", e);
@@ -576,7 +599,8 @@ export function authRouter(): Router {
             nonce,
             "GitHub OAuth Error",
             (e as Error).message,
-            "Ensure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured in the environment variables."
+            "Ensure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured in the environment variables.",
+            R().config.oauth.errorPageCloseDelayMs
           )
         );
       }

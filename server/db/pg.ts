@@ -51,8 +51,8 @@ export class PgWrapper implements DatabaseWrapper {
   public readonly engine = "postgres" as const;
   private pool: Pool;
 
-  constructor(connectionString: string) {
-    this.pool = new Pool({ connectionString, connectionTimeoutMillis: 5000 });
+  constructor(connectionString: string, connectionTimeoutMs = 5000) {
+    this.pool = new Pool({ connectionString, connectionTimeoutMillis: connectionTimeoutMs });
   }
 
   async testConnection(): Promise<void> {

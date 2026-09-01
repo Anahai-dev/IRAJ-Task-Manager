@@ -36,7 +36,7 @@ export function backupRouter(): Router {
       let sqliteSize = 0;
       const sqlitePath = (db as { sqlitePath?: string }).sqlitePath;
       // sqlite path is tracked on runtime via ping; size from config path
-      const pathGuess = R().config.sqlitePath;
+      const pathGuess = R().config.db.sqlitePath;
       if (isSqlite && fs.existsSync(pathGuess)) {
         sqliteSize = fs.statSync(pathGuess).size;
       }
@@ -67,6 +67,10 @@ export function backupRouter(): Router {
     auth,
     requireSuperAdmin,
     asyncHandler(async (_req, res) => {
+      if (!R().config.backup.exportEnabled) {
+        res.status(403).json({ error: "JSON backup export is disabled." });
+        return;
+      }
       const db = await R().getDb();
       const backupData: Record<string, unknown> = {
         format: "iraj-backup-v1",
@@ -105,13 +109,17 @@ export function backupRouter(): Router {
     auth,
     requireSuperAdmin,
     asyncHandler(async (req, res) => {
+      if (!R().config.backup.restoreEnabled) {
+        res.status(403).json({ error: "JSON backup restore is disabled." });
+        return;
+      }
       const db = await R().getDb();
       const backupData = req.body as Record<string, unknown>;
       if (!backupData || typeof backupData !== "object") {
         res.status(400).json({ error: "Invalid backup data format." });
         return;
       }
-      if (backupData.confirm !== true) {
+      if (R().config.backup.requireConfirm && backupData.confirm !== true) {
         res.status(400).json({
           error: "Restore requires confirm: true. This operation wipes existing tables.",
         });
