@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { LayoutDashboard, Eye, EyeOff, Gitlab, Github, Chrome } from 'lucide-react';
+import { apiGet, apiPost } from '../lib/api';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -29,9 +30,7 @@ export default function Login() {
 
   const handleGitLabLogin = async () => {
     try {
-      const res = await fetch(`/api/auth/gitlab/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get GitLab auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/gitlab/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'gitlab_oauth', 'width=600,height=700');
       if (!authWindow) {
@@ -44,9 +43,7 @@ export default function Login() {
 
   const handleGoogleLogin = async () => {
     try {
-      const res = await fetch(`/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get Google auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'google_oauth', 'width=600,height=700');
       if (!authWindow) {
@@ -59,9 +56,7 @@ export default function Login() {
 
   const handleGitHubLogin = async () => {
     try {
-      const res = await fetch(`/api/auth/github/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get GitHub auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/github/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'github_oauth', 'width=600,height=700');
       if (!authWindow) {
@@ -75,14 +70,7 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Login failed');
-      
+      const data = await apiPost<{ user: Parameters<typeof login>[1] }>('/api/auth/login', { email, password });
       login(undefined, data.user);
       navigate('/');
     } catch (err: any) {

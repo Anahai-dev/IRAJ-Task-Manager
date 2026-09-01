@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { User } from "../types";
+import { apiGet, apiPost, apiPut } from "../lib/api";
 
 interface AuthContextType {
   user: User | null;
@@ -36,30 +37,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const refreshSettings = async () => {
     try {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const data = await res.json();
-        setSettings(prev => ({ ...prev, ...data }));
-      }
+      const data = await apiGet<Record<string, string>>('/api/settings');
+      setSettings(prev => ({ ...prev, ...data }));
     } catch (err) {
       console.error("Failed to load settings:", err);
     }
   };
 
   const updateSettings = async (newSettings: Record<string, string>) => {
-    const res = await fetch('/api/settings', {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(newSettings)
-    });
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const data = await apiPut<Record<string, string>>('/api/settings', newSettings);
       setSettings(prev => ({ ...prev, ...data }));
-    } else {
-      const errorData = await res.json();
-      throw new Error(errorData.error || "Failed to update settings");
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : "Failed to update settings");
     }
   };
 
@@ -67,23 +57,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     cleanupLocalStorage();
     setLoading(true);
-    fetch('/api/auth/me', {
-      headers: { 
+    apiGet<User>('/api/auth/me', {
+      headers: {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0'
       },
     })
-      .then(async (res) => {
-        if (res.ok) {
-          const contentType = res.headers.get("content-type");
-          if (!contentType || !contentType.includes("application/json")) {
-            throw new Error("Invalid session");
-          }
-          return res.json();
-        }
-        throw new Error("Unauthenticated");
-      })
       .then((data) => {
         setUser(data);
         refreshSettings();
@@ -103,7 +83,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = () => {
     cleanupLocalStorage();
     setUser(null);
-    fetch('/api/auth/logout', { method: 'POST' }).catch((err) => console.error("Logout request error:", err));
+    void apiPost('/api/auth/logout').catch((err) => console.error("Logout request error:", err));
   };
 
   const updateUser = (updatedUser: User) => {

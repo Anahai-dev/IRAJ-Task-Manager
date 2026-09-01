@@ -13,6 +13,7 @@ import { Tooltip } from './Tooltip';
 import UserAvatar from './UserAvatar';
 import WelcomeModal from './WelcomeModal';
 import GlobalSearch from './GlobalSearch';
+import { apiGet } from '../lib/api';
 
 export default function Layout() {
   const { user, token, logout } = useAuth();
@@ -47,13 +48,8 @@ export default function Layout() {
   React.useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const res = await fetch('/api/integrations/status', {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setIntegrationsStatus(data);
-        }
+        const data = await apiGet('/api/integrations/status');
+        setIntegrationsStatus(data);
       } catch (err) {
         console.error('Failed to fetch integration status:', err);
       }
