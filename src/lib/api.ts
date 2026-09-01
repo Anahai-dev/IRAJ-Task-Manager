@@ -92,6 +92,26 @@ export async function apiDelete<T>(path: string, init?: RequestInit): Promise<T>
   return (await apiFetch<T>(path, { ...init, method: "DELETE" })).data;
 }
 
+/** Download a binary response (e.g. backup export) with the same auth/cookie behavior as apiFetch. */
+export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  const response = await fetch(path, {
+    credentials: "include",
+    ...init,
+    headers: mergeHeaders(init),
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status}) for ${path}`;
+    try {
+      const data = await response.json();
+      message = errorMessageFromBody(data, response.status, path);
+    } catch {
+      // non-JSON error body
+    }
+    throw new ApiError(message, response.status);
+  }
+  return response.blob();
+}
+
 export function isPaginatedResponse<T>(data: unknown): data is PaginatedResponse<T> {
   return Boolean(
     data &&

@@ -1,5 +1,8 @@
 FROM node:20-alpine AS builder
 
+# sqlite3 native module may compile during npm ci on Alpine
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Copy package.json and package-lock.json
@@ -16,6 +19,8 @@ RUN npm run build
 
 # Use a smaller runtime image
 FROM node:20-alpine
+
+RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 

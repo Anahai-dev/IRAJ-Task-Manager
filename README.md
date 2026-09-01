@@ -16,6 +16,7 @@ Full operational guides and feature documentation are available in the [`/docs`]
 - **[📅 Calendar & Workload Analytics](./docs/06-calendar-and-workload.md)**: Calendar view, member capacity tracking, workload balancing.
 - **[👥 Team & User Administration](./docs/07-team-and-user-administration.md)**: Team domains, admin user management, grabbable profile settings carousel.
 - **[💾 Database Operations & Backups](./docs/08-database-and-backups.md)**: SQLite vs PostgreSQL, in-app backup UI, terminal CLI utility (`db-cli.ts`), Docker deployment.
+- **[⚙️ Configuration](./docs/09-configuration.md)**: Index of `server/config.ts` environment keys.
 
 ---
 
@@ -65,12 +66,18 @@ OAUTH_AUTO_PROVISION="false"
 npm run dev
 ```
 
-### 4. Tests
+## Tests & CI
+
 ```bash
-npm test
+npm test        # API + config unit tests (Node test runner)
+npm run lint    # tsc --noEmit
+npm run build
 ```
 
-### 5. Build & Run Production
+GitHub Actions (`.github/workflows/ci.yml`) runs lint, test, and build on push/PR — no secrets required.
+
+### 4. Production
+
 ```bash
 npm run build
 npm start
@@ -83,8 +90,8 @@ npm start
 Manage database snapshots and JSON data portability via terminal:
 
 ```bash
-# View database stats and table row counts
-npm run db-cli stats
+# View database stats and table row counts (uses active engine from config)
+npm run db-cli status
 
 # Backup database to ./backups/
 npm run db-cli backup

@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { User } from '../types';
 import { X, Activity, Clock, FileText, CheckCircle2, MessageSquare, AlertCircle } from 'lucide-react';
 import { safeFormatDate } from '../lib/utils';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import { apiGet } from '../lib/api';
 
 interface ProjectActivityModalProps {
@@ -16,6 +17,8 @@ export default function ProjectActivityModal({ projectId, projectName, users, on
   const { token, user } = useAuth();
   const [activities, setActivities] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  useEscapeKey(onClose);
 
   useEffect(() => {
     apiGet<any[]>(`/api/projects/${projectId}/activity`)
@@ -38,7 +41,12 @@ export default function ProjectActivityModal({ projectId, projectName, users, on
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="project-activity-title"
+      className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300"
+    >
       <div className="my-auto bg-surface border border-border-subtle rounded-lg shadow-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] md:max-h-[85vh] flex flex-col font-sans overflow-hidden">
         <div className="px-6 py-4 border-b border-border-subtle flex justify-between items-center bg-page-bg">
           <div className="flex items-center space-x-3">
