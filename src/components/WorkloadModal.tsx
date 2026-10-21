@@ -1,8 +1,8 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { X, Activity, User, CheckCircle2, CircleDashed } from 'lucide-react';
 import UserAvatar from './UserAvatar';
+import { apiGet } from '../lib/api';
 
 interface WorkloadModalProps {
   projectId: string;
@@ -21,7 +21,7 @@ interface UserWorkload {
 }
 
 export default function WorkloadModal({ projectId, projectName, onClose }: WorkloadModalProps) {
-  const { isAuthenticated } = useAuth();
+  const { token } = useAuth();
   const [workloads, setWorkloads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -53,11 +53,9 @@ export default function WorkloadModal({ projectId, projectName, onClose }: Workl
     let active = true;
     const fetchWorkload = async () => {
       try {
-        const res = await apiFetchRaw(`/api/projects/${projectId}/workload`, {
-          headers: { }
-        });
-        if (res.ok && active) {
-          setWorkloads(await res.json());
+        const data = await apiGet<any[]>(`/api/projects/${projectId}/workload`);
+        if (active) {
+          setWorkloads(data);
         }
       } catch (err) {
         console.error(err);
@@ -67,7 +65,7 @@ export default function WorkloadModal({ projectId, projectName, onClose }: Workl
     };
     fetchWorkload();
     return () => { active = false; };
-  }, [projectId, isAuthenticated]);
+  }, [projectId, token]);
 
   return (
     <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">

@@ -1,4 +1,3 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -12,13 +11,14 @@ import ProjectActivityModal from '../components/ProjectActivityModal';
 import ProjectMembersModal from '../components/ProjectMembersModal';
 import ProjectTeamsModal from '../components/ProjectTeamsModal';
 import ProjectGitModal from '../components/ProjectGitModal';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import { exportToCSV, exportToJSON } from '../lib/export';
 import { EmptyState } from '../components/EmptyState';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { Tooltip } from '../components/Tooltip';
 
 export default function Projects() {
-  const { isAuthenticated, user: currentUser, can } = useAuth();
+  const { token, user: currentUser } = useAuth();
   const { success, error, info } = useToast();
   const { gitEnabled } = useGitFeature();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -55,18 +55,12 @@ export default function Projects() {
 
   const fetchProjects = async () => {
     try {
-      const res = await apiFetchRaw('/api/projects', {
-        headers: { }
-      });
-      if (res.ok) {
-        setProjects(await res.json());
-      }
-      const usersRes = await apiFetchRaw('/api/users', {
-        headers: { }
-      });
-      if (usersRes.ok) {
-        setUsers(await usersRes.json());
-      }
+      const [projectsData, usersData] = await Promise.all([
+        fetchAllPages<Project>('/api/projects'),
+        fetchAllPages<User>('/api/users'),
+      ]);
+      setProjects(projectsData);
+      setUsers(usersData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -75,8 +69,8 @@ export default function Projects() {
   };
 
   useEffect(() => {
-    if (isAuthenticated) fetchProjects();
-  }, [isAuthenticated]);
+    if (token) fetchProjects();
+  }, [token]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-surface-dim overflow-y-auto">
@@ -114,18 +108,16 @@ export default function Projects() {
               </>
             )}
           </div>
-          {can('manage_projects') && (
-            <button
-              onClick={() => {
-                setSelectedProject(null);
-                setShowCreateModal(true);
-              }}
-              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 font-bold transition-all text-sm"
-            >
-              <Plus size={16} />
-              <span>New Project</span>
-            </button>
-          )}
+          <button
+            onClick={() => {
+              setSelectedProject(null);
+              setShowCreateModal(true);
+            }}
+            className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 font-bold transition-all text-sm"
+          >
+            <Plus size={16} />
+            <span>New Project</span>
+          </button>
         </div>
       </header>
       
@@ -138,7 +130,7 @@ export default function Projects() {
               icon={FolderKanban}
               title="No projects yet"
               description="Create a new project to start organizing tasks and collaborating with your team."
-              actionText={can('manage_projects') ? "New Project" : undefined}
+              actionText="New Project"
               onAction={() => {
                 setSelectedProject(null);
                 setShowCreateModal(true);
@@ -148,7 +140,7 @@ export default function Projects() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {projects.map(project => {
-              const isOwnerOrAdmin = can('manage_projects') || currentUser?.id === project.ownerId;
+              const isOwnerOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'manager' || currentUser?.id === project.ownerId;
               
               return (
               <div 
@@ -191,13 +183,8 @@ export default function Projects() {
                           e.preventDefault();
 
                           try {
-                            const res = await apiFetchRaw(`/api/projects/${project.id}`, {
-                              method: 'DELETE',
-                              headers: { }
-                            });
-                            if (res.ok) {
-                              fetchProjects();
-                            }
+                            await apiDelete(`/api/projects/${project.id}`);
+                            fetchProjects();
                           } catch (err) {
                             console.error(err);
                           }
@@ -213,7 +200,7 @@ export default function Projects() {
                 
                 <div className="text-xs text-muted mb-6 flex-1 min-h-[32px] prose dark:prose-invert prose-sm prose-p:my-1 prose-h1:text-sm prose-h2:text-sm prose-h3:text-sm overflow-hidden text-ellipsis line-clamp-2 break-words">
                   {project.description ? (
-                    <Markdown>{project.description}</Markdown>
+                    <SafeMarkdown>{project.description}</SafeMarkdown>
                   ) : (
                     'No description provided.'
                   )}
@@ -382,7 +369,7 @@ export default function Projects() {
 }
 
 function CreateProjectModal({ project, onClose, onSuccess }: { project?: Project | null, onClose: () => void, onSuccess: () => void }) {
-  const { isAuthenticated } = useAuth();
+  const { token } = useAuth();
   const [name, setName] = useState(project?.name || '');
   const [projectKey, setProjectKey] = useState(project?.projectKey || '');
   const [description, setDescription] = useState(project?.description || '');
@@ -397,22 +384,15 @@ function CreateProjectModal({ project, onClose, onSuccess }: { project?: Project
     setError(null);
     setSubmitting(true);
     try {
-      const res = await apiFetchRaw(project ? `/api/projects/${project.id}` : '/api/projects', {
-        method: project ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ name, description, projectKey })
-      });
-      if (res.ok) {
-        onSuccess();
+      if (project) {
+        await apiPut(`/api/projects/${project.id}`, { name, description, projectKey });
       } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || 'Failed to save project. Please try again.');
+        await apiPost('/api/projects', { name, description, projectKey });
       }
+      onSuccess();
     } catch (err: any) {
       console.error(err);
-      setError('An error occurred. Please try again.');
+      setError(err.message || 'An error occurred. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -521,7 +501,7 @@ function CreateProjectModal({ project, onClose, onSuccess }: { project?: Project
               ) : (
                 <div className="w-full h-[96px] overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-4 rounded border border-border-subtle bg-surface-dim text-primary font-sans text-sm">
                   {description ? (
-                    <Markdown>{description}</Markdown>
+                    <SafeMarkdown>{description}</SafeMarkdown>
                   ) : (
                     <span className="text-subtle italic">No description provided.</span>
                   )}

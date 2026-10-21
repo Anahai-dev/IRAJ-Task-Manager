@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useGitFeature } from '../contexts/GitFeatureContext';
@@ -10,29 +10,19 @@ import ProjectActivityModal from '../components/ProjectActivityModal';
 import { Plus, MoreVertical, Calendar, ArrowUpDown, CornerDownRight, Search, Filter, AlertCircle, ChevronUp, Minus, ChevronDown, X, FolderKanban, Activity, CheckCircle2, Workflow, Clock, Pencil, Trash2, UserPlus, Download, GitBranch, GitPullRequest } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn, safeFormatDate } from '../lib/utils';
-import { apiFetchRaw } from '../lib/api';
-import { saveTask } from '../lib/taskService';
+import { canCreateTasks } from '../lib/permissions';
 import { useSearchParams, Link, Navigate, useNavigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import UserAvatar from '../components/UserAvatar';
 import { exportToCSV, exportToJSON } from '../lib/export';
 import { HelpIcon, Tooltip } from '../components/Tooltip';
-import { EmptyState } from '../components/EmptyState';
-import { BoardColumn } from '../components/board/BoardColumn';
-import ConfirmModal from '../components/ConfirmModal';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
+import { useBoardColumns } from '../hooks/useBoardColumns';
+import { DEFAULT_BOARD_COLUMNS, type BoardColumn } from '../lib/board';
 
-export interface Column {
-  id: string;
-  title: string;
-}
-
-export const DEFAULT_COLUMNS: Column[] = [
-  { id: 'todo', title: 'To Do' },
-  { id: 'in_progress', title: 'In Progress' },
-  { id: 'review', title: 'Review' },
-  { id: 'done', title: 'Done' }
-];
+export type Column = BoardColumn;
+export const DEFAULT_COLUMNS = DEFAULT_BOARD_COLUMNS;
 
 type SortOption = 'custom' | 'priority' | 'deadline' | 'createdAt';
 type SortDirection = 'asc' | 'desc';
@@ -46,7 +36,7 @@ const priorityWeight = {
 };
 
 export default function Board() {
-  const { isAuthenticated, user, can } = useAuth();
+  const { token, user } = useAuth();
   const { success, error, info } = useToast();
   const { gitEnabled } = useGitFeature();
   const navigate = useNavigate();
@@ -60,14 +50,7 @@ export default function Board() {
   
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   
-  const [columns, setColumns] = useState<Column[]>(() => {
-    try {
-      const saved = localStorage.getItem(`board-columns-${projectId || 'all'}`);
-      return saved ? JSON.parse(saved) : DEFAULT_COLUMNS;
-    } catch (e) {
-      return DEFAULT_COLUMNS;
-    }
-  });
+  const { columns, setColumns } = useBoardColumns(projectId, token);
 
   const [editingColumnId, setEditingColumnId] = useState<string | null>(null);
   const [editingColumnTitle, setEditingColumnTitle] = useState('');
@@ -92,66 +75,6 @@ export default function Board() {
   const handleDeleteColumn = (id: string) => {
     setColumns(columns.filter(c => c.id !== id));
   };
-
-  const [bulkDeleteModalOpen, setBulkDeleteModalOpen] = useState(false);
-
-  const currentProjectIdRef = useRef(projectId);
-  useEffect(() => {
-    let isMounted = true;
-    const loadColumns = async () => {
-      if (projectId && isAuthenticated) {
-        try {
-          const res = await apiFetchRaw(`/api/projects/${projectId}/columns`, {
-            headers: { }
-          });
-          if (res.ok) {
-            const data = await res.json();
-            const serverCols = Array.isArray(data) ? data : (data && data.columns && Array.isArray(data.columns) ? data.columns : null);
-            if (serverCols && serverCols.length > 0) {
-              if (isMounted) {
-                setColumns(serverCols);
-                localStorage.setItem(`board-columns-${projectId}`, JSON.stringify(serverCols));
-                currentProjectIdRef.current = projectId;
-                return;
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Failed to load server columns:", e);
-        }
-      }
-      try {
-        const saved = localStorage.getItem(`board-columns-${projectId || 'all'}`);
-        if (isMounted) {
-          setColumns(saved ? JSON.parse(saved) : DEFAULT_COLUMNS);
-        }
-      } catch (e) {
-        if (isMounted) setColumns(DEFAULT_COLUMNS);
-      }
-      currentProjectIdRef.current = projectId;
-    };
-    loadColumns();
-    return () => { isMounted = false; };
-  }, [projectId, isAuthenticated]);
-
-  useEffect(() => {
-    if (currentProjectIdRef.current === projectId) {
-      localStorage.setItem(`board-columns-${projectId || 'all'}`, JSON.stringify(columns));
-      if (projectId && isAuthenticated) {
-        // Debounced sync to server
-        const timer = setTimeout(() => {
-          apiFetchRaw(`/api/projects/${projectId}/columns`, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ columns })
-          }).catch(err => console.error("Failed to save project columns:", err));
-        }, 500);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [columns, projectId, isAuthenticated]);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isWorkloadModalOpen, setIsWorkloadModalOpen] = useState(false);
@@ -211,17 +134,12 @@ export default function Board() {
 
   const fetchData = async () => {
     try {
-      const results = await Promise.all([
-        apiFetchRaw('/api/tasks', { headers: { } }),
-        apiFetchRaw('/api/users', { headers: { } }),
-        apiFetchRaw('/api/projects', { headers: { } }),
-        apiFetchRaw('/api/milestones', { headers: { } })
+      const [tasksData, usersData, projectsData, milestonesData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
+        fetchAllPages<Milestone>('/api/milestones'),
       ]);
-      
-      const tasksData: Task[] = await results[0].json();
-      const usersData = await results[1].json();
-      const projectsData: Project[] = await results[2].json();
-      const milestonesData: Milestone[] = await results[3].json();
       
       setAllProjects(projectsData);
       setMilestones(milestonesData);
@@ -246,45 +164,7 @@ export default function Board() {
 
   useEffect(() => {
     fetchData();
-  }, [isAuthenticated, projectId]);
-
-  useEffect(() => {
-    const handleRealtimeTask = (e: CustomEvent) => {
-      const { type, data } = e.detail || {};
-      if (!data) return;
-
-      if (type === 'task:created') {
-        if (!projectId || data.projectId === projectId) {
-          setTasks(prev => {
-            if (prev.some(t => t.id === data.id)) return prev;
-            return [data, ...prev];
-          });
-        }
-      } else if (type === 'task:updated') {
-        setTasks(prev => {
-          const targetId = data.id || data.taskId;
-          const exists = prev.some(t => t.id === targetId);
-          if (!exists) {
-            if (!projectId || data.projectId === projectId) {
-              fetchData();
-            }
-            return prev;
-          }
-          return prev.map(t => (t.id === targetId ? { ...t, ...data } : t));
-        });
-      } else if (type === 'task:deleted') {
-        const deletedId = data.id || data.taskId;
-        if (deletedId) {
-          setTasks(prev => prev.filter(t => t.id !== deletedId));
-        }
-      }
-    };
-
-    window.addEventListener('realtime:task-changed', handleRealtimeTask as EventListener);
-    return () => {
-      window.removeEventListener('realtime:task-changed', handleRealtimeTask as EventListener);
-    };
-  }, [projectId]);
+  }, [token, projectId]);
 
   const sortedTasks = useMemo(() => {
     return [...tasks].sort((a, b) => {
@@ -428,26 +308,9 @@ export default function Board() {
     setTasks(tasks.map(t => t.id === taskId ? { ...t, status: targetStatus as any, orderIndex: newOrderIndex } : t));
     
     try {
-      const res = await apiFetchRaw(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...task, status: targetStatus, orderIndex: newOrderIndex })
-      });
-      if (!res.ok) {
-        let msg = 'Failed to move task';
-        try {
-          const data = await res.json();
-          msg = data.error || data.message || msg;
-        } catch {
-          // ignore
-        }
-        error(msg);
-      }
-    } catch (err: any) {
+      await apiPut(`/api/tasks/${taskId}`, { ...task, status: targetStatus, orderIndex: newOrderIndex });
+    } catch (err) {
       console.error('Failed to update status', err);
-      error(err?.message ? `Failed to move task: ${err.message}` : 'Failed to move task');
     } finally {
       fetchData();
     }
@@ -467,26 +330,26 @@ export default function Board() {
   };
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
-    await saveTask({
-      taskData,
-      editingTaskId: editingTask?.id,
-      onSuccess: () => {
-        setIsModalOpen(false);
-        fetchData();
-      },
-      toast: { success, error }
-    });
+    const isEdit = !!editingTask;
+
+    try {
+      if (isEdit) {
+        await apiPut(`/api/tasks/${editingTask!.id}`, taskData);
+      } else {
+        await apiPost('/api/tasks', taskData);
+      }
+      setIsModalOpen(false);
+      fetchData();
+      success(editingTask ? 'Task updated' : 'Task created');
+    } catch (err: unknown) {
+      console.error(err);
+      error(`Error saving task: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
   };
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await apiFetchRaw(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
       if (updates.status === 'done') {
         success('Task completed');
@@ -516,13 +379,7 @@ export default function Board() {
     try {
       const selectedTasks = tasks.filter(t => selectedTaskIds.has(t.id));
       await Promise.all(selectedTasks.map(t => 
-        apiFetchRaw(`/api/tasks/${t.id}`, {
-          method: 'PUT',
-          headers: { 
-            'Content-Type': 'application/json' 
-          },
-          body: JSON.stringify({ ...t, ...updates })
-        })
+        apiPut(`/api/tasks/${t.id}`, { ...t, ...updates })
       ));
       setSelectedTaskIds(new Set());
       fetchData();
@@ -537,19 +394,12 @@ export default function Board() {
     }
   };
 
-  const handleBulkDelete = () => {
+  const handleBulkDelete = async () => {
     if (selectedTaskIds.size === 0) return;
-    setBulkDeleteModalOpen(true);
-  };
-
-  const confirmBulkDelete = async () => {
-    setBulkDeleteModalOpen(false);
+    if (!window.confirm(`Are you sure you want to delete ${selectedTaskIds.size} tasks?`)) return;
     try {
       await Promise.all(Array.from(selectedTaskIds).map(id => 
-        apiFetchRaw(`/api/tasks/${id}`, {
-          method: 'DELETE',
-          headers: { }
-        })
+        apiDelete(`/api/tasks/${id}`)
       ));
       setSelectedTaskIds(new Set());
       fetchData();
@@ -563,10 +413,7 @@ export default function Board() {
   const handleDeleteTask = async (taskId: string) => {
 
     try {
-      await apiFetchRaw(`/api/tasks/${taskId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
+      await apiDelete(`/api/tasks/${taskId}`);
       fetchData();
       success('Task deleted');
     } catch (err) {
@@ -635,7 +482,7 @@ export default function Board() {
               </h1>
               <div className="text-xs text-subtle mt-1 prose dark:prose-invert prose-sm line-clamp-1">
                 {project.description ? (
-                  <Markdown>{project.description}</Markdown>
+                  <SafeMarkdown>{project.description}</SafeMarkdown>
                 ) : (
                   'Project Task Board'
                 )}
@@ -791,7 +638,7 @@ export default function Board() {
               </>
             )}
           </div>
-          {can('create_tasks') && (
+          {canCreateTasks(user) && (
             <Tooltip content="Create a new task with keyboard shortcut: c" position="bottom">
               <button
                 onClick={handleCreateTask}
@@ -809,42 +656,433 @@ export default function Board() {
           {columns.map(column => {
             const parentTasks = filteredTasks.filter(t => !t.parentId);
             const columnTasks = parentTasks.filter(t => t.status === column.id);
-            return (
-              <BoardColumn
-                key={column.id}
-                column={column}
-                columns={columns}
-                setColumns={setColumns}
-                draggingColumnId={draggingColumnId}
-                setDraggingColumnId={setDraggingColumnId}
-                handleColumnDragEnter={handleColumnDragEnter}
-                editingColumnId={editingColumnId}
-                setEditingColumnId={setEditingColumnId}
-                editingColumnTitle={editingColumnTitle}
-                setEditingColumnTitle={setEditingColumnTitle}
-                handleUpdateColumnTitle={handleUpdateColumnTitle}
-                handleDeleteColumn={handleDeleteColumn}
-                handleCreateTaskInColumn={handleCreateTaskInColumn}
-                columnTasks={columnTasks}
-                filteredTasks={filteredTasks}
-                tasks={tasks}
-                users={users}
-                milestones={milestones}
-                userRole={user?.role}
-                draggingTaskId={draggingTaskId}
-                setDraggingTaskId={setDraggingTaskId}
-                selectedTaskIds={selectedTaskIds}
-                toggleSelection={toggleSelection}
-                handleEditTask={handleEditTask}
-                handleDeleteTask={handleDeleteTask}
-                handleDropTask={handleDropTask}
-                handleUpdateTask={handleUpdateTask}
-                setTasks={setTasks}
-                gitEnabled={gitEnabled}
-                success={success}
-              />
-            );
-          })}
+          return (
+            <div 
+              key={column.id} 
+              className={`w-[290px] sm:w-80 snap-center flex-shrink-0 flex flex-col bg-surface border rounded-lg transition-colors duration-200 ${draggingColumnId === column.id ? 'opacity-50 border-dashed border-blue-500' : 'border-border-subtle'} `}
+              onDragEnter={(e) => {
+                if (draggingColumnId) {
+                  handleColumnDragEnter(column.id);
+                }
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                e.currentTarget.classList.add('border-blue-500/50');
+              }}
+              onDragLeave={(e) => {
+                e.currentTarget.classList.remove('border-blue-500/50');
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-blue-500/50');
+                
+                const columnId = e.dataTransfer.getData('columnId');
+                const taskId = e.dataTransfer.getData('taskId');
+                
+                if (columnId && columnId !== column.id) {
+                  // Handle column reorder
+                  setColumns(prev => {
+                    const newColumns = [...prev];
+                    const sourceIdx = newColumns.findIndex(c => c.id === columnId);
+                    const targetIdx = newColumns.findIndex(c => c.id === column.id);
+                    if (sourceIdx !== -1 && targetIdx !== -1) {
+                        const [dragged] = newColumns.splice(sourceIdx, 1);
+                        newColumns.splice(targetIdx, 0, dragged);
+                    }
+                    return newColumns;
+                  });
+                } else if (taskId) {
+                  handleDropTask(taskId, column.id);
+                }
+                setDraggingColumnId(null);
+              }}
+            >
+              <div 
+                className="px-4 py-3 flex justify-between items-center border-b border-border-subtle group cursor-move"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('columnId', column.id);
+                  setTimeout(() => setDraggingColumnId(column.id), 0);
+                }}
+                onDragEnd={() => {
+                  setDraggingColumnId(null);
+                }}
+              >
+                <div className="flex items-center space-x-2 flex-1">
+                  {editingColumnId === column.id ? (
+                    <input
+                      type="text"
+                      className="text-xs font-bold text-strong uppercase tracking-widest bg-transparent border-b border-blue-500 outline-none w-full"
+                      value={editingColumnTitle}
+                      onChange={(e) => setEditingColumnTitle(e.target.value)}
+                      onBlur={() => handleUpdateColumnTitle(column.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleUpdateColumnTitle(column.id);
+                        if (e.key === 'Escape') setEditingColumnId(null);
+                      }}
+                      autoFocus
+                    />
+                  ) : (
+                    <h3 className="text-xs font-bold text-strong uppercase tracking-widest cursor-pointer" onDoubleClick={() => {
+                      setEditingColumnId(column.id);
+                      setEditingColumnTitle(column.title);
+                    }}>
+                      {column.title}
+                    </h3>
+                  )}
+                  <span className="bg-surface-accent text-strong px-2 py-0.5 rounded text-[10px] font-medium">
+                    {columnTasks.length}
+                  </span>
+                </div>
+                <div className="flex flex-row items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {canCreateTasks(user) && (
+                    <Tooltip content={`Add Task to ${column.title}`} position="top">
+                      <button
+                        onClick={() => handleCreateTaskInColumn(column.id)}
+                        className="bg-blue-500/10 text-blue-500 hover:bg-blue-500 hover:text-white p-1 rounded transition-colors"
+                      >
+                        <Plus size={16} />
+                      </button>
+                    </Tooltip>
+                  )}
+                  <Tooltip content={`Delete ${column.title}`} position="top">
+                    <button
+                      onClick={() => handleDeleteColumn(column.id)}
+                      className="text-subtle hover:text-red-400"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {columnTasks.map(task => {
+                  const assignee = users.find(u => u.id === task.assigneeId);
+                  const subtasks = filteredTasks.filter(t => t.parentId === task.id);
+                  const completedSubtasks = subtasks.filter(t => t.status === 'done').length;
+
+                  return (
+                    <div
+                      key={task.id}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Task: ${task.title}`}
+                      draggable
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleEditTask(task);
+                        }
+                      }}
+                      onDragStart={(e) => {
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('taskId', task.id);
+                        setTimeout(() => setDraggingTaskId(task.id), 0);
+
+                      }}
+                      onDragEnd={() => setDraggingTaskId(null)}
+                      onDragOver={(e) => {
+                        if (e.dataTransfer.types.includes('columnid') || e.dataTransfer.types.includes('columnId')) {
+                          return;
+                        }
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = 'move';
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const y = e.clientY - rect.top;
+                        if (y < rect.height / 2) {
+                          e.currentTarget.style.borderTopColor = '#3b82f6';
+                          e.currentTarget.style.borderBottomColor = '#2d3139';
+                        } else {
+                          e.currentTarget.style.borderTopColor = '#2d3139';
+                          e.currentTarget.style.borderBottomColor = '#3b82f6';
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        e.currentTarget.style.borderTopColor = '';
+                        e.currentTarget.style.borderBottomColor = '';
+                      }}
+                      onDrop={(e) => {
+                        const draggedColumnId = e.dataTransfer.getData('columnId');
+                        if (draggedColumnId) {
+                          // Allow it to bubble up to the column container
+                          return;
+                        }
+                        
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.currentTarget.style.borderTopColor = '';
+                        e.currentTarget.style.borderBottomColor = '';
+                        const draggedTaskId = e.dataTransfer.getData('taskId');
+                        if (!draggedTaskId || draggedTaskId === task.id) return;
+                        
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const y = e.clientY - rect.top;
+                        const position = y < rect.height / 2 ? 'before' : 'after';
+                        
+                        handleDropTask(draggedTaskId, column.id, task.id, position);
+                      }}
+                      onClick={() => handleEditTask(task)}
+                      className={cn(
+                        "task-card p-3 bg-surface-dim border rounded cursor-pointer hover:border-blue-500 transition-colors group flex flex-col",
+                        draggingTaskId === task.id && "opacity-40",
+                        task.priority === 'urgent' ? 'border-red-500/40' :
+                        task.priority === 'high' ? 'border-amber-500/40' :
+                        task.priority === 'medium' ? 'border-blue-500/40' :
+                        'border-border-subtle'
+                      )}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="flex items-center space-x-2">
+                          <div 
+                            className={cn(
+                              "opacity-0 transition-opacity flex items-center justify-center cursor-pointer p-0.5 lg:group-hover:opacity-100",
+                              (selectedTaskIds.has(task.id) || selectedTaskIds.size > 0) && "opacity-100"
+                            )}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleSelection(task.id);
+                            }}
+                          >
+                            <input 
+                              type="checkbox" 
+                              readOnly 
+                              checked={selectedTaskIds.has(task.id)} 
+                              className="w-3 h-3 cursor-pointer accent-blue-500" 
+                            />
+                          </div>
+                          <div className={cn(
+                            "flex items-center space-x-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0",
+                            task.priority === 'urgent' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                            task.priority === 'high' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                            task.priority === 'medium' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                            'bg-surface-accent text-muted border border-border-strong'
+                          )}>
+                            {task.priority === 'urgent' && <AlertCircle size={10} />}
+                            {task.priority === 'high' && <ChevronUp size={10} />}
+                            {task.priority === 'medium' && <Minus size={10} />}
+                            {task.priority === 'low' && <ChevronDown size={10} />}
+                            <span>{task.priority}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button 
+                            className="text-subtle hover:text-blue-400 p-1 rounded hover:bg-blue-500/10"
+                            title="Edit Task"
+                            onClick={(e) => { e.stopPropagation(); handleEditTask(task); }}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button 
+                            className="text-subtle hover:text-red-400 p-1 rounded hover:bg-red-500/10"
+                            title="Delete Task"
+                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); handleDeleteTask(task.id); }}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <h4 className="text-xs font-bold text-strong mb-1 leading-snug">{task.title}</h4>
+                      {gitEnabled && task.branchName ? (
+                        <div className="flex items-center space-x-1 mb-2 flex-wrap gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard.writeText(`git checkout ${task.branchName}`);
+                              success(`Copied: git checkout ${task.branchName}`);
+                            }}
+                            title="Click to copy: git checkout branch"
+                            className="inline-flex items-center space-x-1 text-[10px] font-mono font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 px-1.5 py-0.5 rounded border border-blue-500/20 transition-all truncate max-w-[180px]"
+                          >
+                            <GitBranch size={10} className="shrink-0" />
+                            <span className="truncate">{task.branchName}</span>
+                          </button>
+                          {task.prUrl && (
+                            <a
+                              href={task.prUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="inline-flex items-center space-x-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-1.5 py-0.5 rounded border border-emerald-500/20 transition-colors"
+                              title="View Pull Request"
+                            >
+                              <GitPullRequest size={9} />
+                              <span>PR</span>
+                            </a>
+                          )}
+                        </div>
+                      ) : null}
+                      {task.milestoneId && (
+                        <div className="text-[9px] font-bold uppercase tracking-widest text-[#a855f7] bg-[#a855f7]/10 border border-[#a855f7]/20 px-1.5 py-0.5 rounded inline-block mb-2 max-w-full truncate">
+                          {milestones.find(m => m.id === task.milestoneId)?.name || 'Milestone'}
+                        </div>
+                      )}
+                      
+                      {(() => {
+                        const allDeps = task.dependencies || [];
+                        const pendingDeps = allDeps.filter(depId => {
+                           const dep = filteredTasks.find(t => t.id === depId);
+                           return dep && dep.status !== 'done';
+                        }).length;
+                        
+                        if (allDeps.length === 0) return null;
+                        
+                        return (
+                          <div className={cn("text-[9px] font-bold uppercase tracking-widest inline-flex items-center space-x-1 px-1.5 py-0.5 rounded mb-2", pendingDeps > 0 ? "bg-red-500/10 text-red-400" : "bg-green-500/10 text-green-400")}>
+                             {pendingDeps > 0 ? (
+                               <>
+                                 <AlertCircle size={10} />
+                                 <span>{pendingDeps} Blocked</span>
+                               </>
+                             ) : (
+                               <>
+                                 <CheckCircle2 size={10} />
+                                 <span>Unblocked</span>
+                               </>
+                             )}
+                          </div>
+                        );
+                      })()}
+
+                      {subtasks.length > 0 && (
+                        <div className="mb-2 mt-1">
+                          <div className="flex items-center justify-between text-[9px] font-bold text-subtle uppercase tracking-widest mb-1">
+                            <span>Subtasks</span>
+                            <span>{completedSubtasks}/{subtasks.length}</span>
+                          </div>
+                          <div className="w-full h-1 bg-surface-accent rounded-full overflow-hidden">
+                            <div 
+                              className={cn(
+                                "h-full transition-all duration-300",
+                                completedSubtasks === subtasks.length ? "bg-green-500" : "bg-blue-500"
+                              )} 
+                              style={{ width: `${(completedSubtasks / subtasks.length) * 100}%` }}
+                            />
+                          </div>
+                          <div className="flex flex-col mt-2 space-y-1 pl-1 border-l-2 border-border-subtle/50 ml-1">
+                            {subtasks.map(st => (
+                              <div 
+                                key={st.id} 
+                                draggable
+                                onDragStart={(e) => {
+                                  e.stopPropagation();
+                                  e.dataTransfer.effectAllowed = 'move';
+                                  e.dataTransfer.setData('taskId', st.id);
+                                  setTimeout(() => setDraggingTaskId(st.id), 0);
+
+                                }}
+                                onDragEnd={() => setDraggingTaskId(null)}
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.dataTransfer.dropEffect = 'move';
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  const y = e.clientY - rect.top;
+                                  if (y < rect.height / 2) {
+                                    e.currentTarget.style.borderTopColor = '#3b82f6';
+                                    e.currentTarget.style.borderBottomColor = '';
+                                  } else {
+                                    e.currentTarget.style.borderTopColor = '';
+                                    e.currentTarget.style.borderBottomColor = '#3b82f6';
+                                  }
+                                }}
+                                onDragLeave={(e) => {
+                                  e.currentTarget.style.borderTopColor = '';
+                                  e.currentTarget.style.borderBottomColor = '';
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.currentTarget.style.borderTopColor = '';
+                                  e.currentTarget.style.borderBottomColor = '';
+                                  const draggedTaskId = e.dataTransfer.getData('taskId');
+                                  if (!draggedTaskId || draggedTaskId === st.id) return;
+                                  
+                                  const draggedTask = tasks.find(t => t.id === draggedTaskId);
+                                  if (!draggedTask) return;
+                                  // For subtasks, only allow if same parentId (so we don't accidentally move parents into subtasks)
+                                  if (draggedTask.parentId === st.parentId) {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    const y = e.clientY - rect.top;
+                                    const position = y < rect.height / 2 ? 'before' : 'after';
+                                    handleDropTask(draggedTaskId, column.id, st.id, position);
+                                  }
+                                }}
+                                className={cn(
+                                  "flex justify-between items-center bg-surface p-1.5 rounded cursor-pointer hover:bg-surface-dim border border-transparent hover:border-border-subtle",
+                                  draggingTaskId === st.id && "opacity-40"
+                                )}
+                                onClick={(e) => { e.stopPropagation(); handleEditTask(st); }}
+                              >
+                                <div className="flex items-center space-x-1.5 overflow-hidden">
+                                  <CornerDownRight size={10} className="text-border-strong shrink-0" />
+                                  <span className={cn(
+                                    "text-[10px] truncate max-w-[150px]", 
+                                    st.status === 'done' ? "line-through text-subtle opacity-50" : "text-muted"
+                                  )}>
+                                    {st.title}
+                                  </span>
+                                </div>
+                                <span className={cn(
+                                  "w-2 h-2 rounded-full",
+                                  st.status === 'done' ? 'bg-green-500' :
+                                  st.status === 'in_progress' ? 'bg-blue-500' :
+                                  st.status === 'review' ? 'bg-amber-500' :
+                                  'bg-surface-accent'
+                                )} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div className="mt-auto pt-2 flex items-center justify-between text-[10px] text-muted border-t border-border-subtle">
+                        <div className="flex items-center space-x-1 font-mono">
+                          <Calendar size={12} />
+                          <span>
+                            {safeFormatDate(task.deadline, 'MMM dd', 'NO DEADLINE').toUpperCase()}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-2 relative group/assignee" title={assignee ? assignee.name : 'Unassigned'}>
+                          <div className="cursor-pointer inline-flex relative">
+                            {assignee ? (
+                              <UserAvatar user={assignee} className="w-5 h-5 text-[9px] rounded" showTooltip={false} />
+                            ) : (
+                              <div className="w-5 h-5 rounded border border-dashed border-border-strong flex items-center justify-center text-muted group-hover:border-blue-500/50 group-hover:text-blue-400 transition-colors bg-surface-dim group-hover:bg-blue-500/10">
+                                <UserPlus size={10} />
+                              </div>
+                            )}
+                            <select 
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              value={task.assigneeId || ""}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                const newAssigneeId = e.target.value || null;
+                                setTasks(tasks.map(t => t.id === task.id ? { ...t, assigneeId: newAssigneeId } : t));
+                                handleUpdateTask(task.id, task, { assigneeId: newAssigneeId });
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value="">Unassigned</option>
+                              {users.map(u => (
+                                 <option key={u.id} value={u.id}>{u.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
         <div className="w-80 flex-shrink-0 flex items-center justify-center border border-dashed border-border-subtle hover:border-blue-500 hover:bg-blue-500/5 rounded-lg bg-surface-dim transition-colors cursor-pointer group" onClick={handleAddColumn}>
           <div className="flex items-center space-x-2 text-subtle group-hover:text-blue-500 transition-colors">
             <Plus size={16} />
@@ -948,15 +1186,6 @@ export default function Board() {
           onClose={() => setIsActivityModalOpen(false)}
         />
       )}
-
-      <ConfirmModal
-        isOpen={bulkDeleteModalOpen}
-        title="Delete Selected Tasks"
-        message={`Are you sure you want to delete ${selectedTaskIds.size} tasks? This action cannot be undone.`}
-        confirmText="Delete Tasks"
-        onConfirm={confirmBulkDelete}
-        onCancel={() => setBulkDeleteModalOpen(false)}
-      />
     </div>
   );
 }

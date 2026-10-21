@@ -2,17 +2,18 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
-import { checkProjectAccess, checkProjectWriteAccess } from "../server/middleware/auth.js";
-import { getUserPermissions } from "../server/routes/auth.routes.js";
+import { checkProjectWriteAccess, resolveUserPermissions } from "../server/rbac.ts";
+import { SqliteWrapper } from "../server/db/sqlite.ts";
 
 describe("RBAC and Access Control Regression Tests", () => {
   let db: any;
 
   test("Setup in-memory test database with RBAC schema", async () => {
-    db = await open({
+    const sqliteDb = await open({
       filename: ":memory:",
       driver: sqlite3.Database
     });
+    db = new SqliteWrapper(sqliteDb);
 
     await db.exec(`
       CREATE TABLE users (
@@ -70,26 +71,26 @@ describe("RBAC and Access Control Regression Tests", () => {
   });
 
   test("Super admin has full write access to any project", async () => {
-    const superAdmin = { id: "user-superadmin", role: "super_admin" };
+    const superAdmin = { id: "user-superadmin", name: "Super", email: "super@example.com", role: "super_admin" };
     const canWrite = await checkProjectWriteAccess(db, "proj-1", superAdmin);
     assert.equal(canWrite, true);
   });
 
   test("Project owner has write access", async () => {
-    const owner = { id: "user-dev", role: "developer" };
+    const owner = { id: "user-dev", name: "Dev", email: "dev@example.com", role: "developer" };
     const canWrite = await checkProjectWriteAccess(db, "proj-1", owner);
     assert.equal(canWrite, true);
   });
 
   test("Global viewer role is strictly denied project write access", async () => {
-    const viewer = { id: "user-viewer", role: "viewer" };
+    const viewer = { id: "user-viewer", name: "Viewer", email: "viewer@example.com", role: "viewer" };
     const canWrite = await checkProjectWriteAccess(db, "proj-1", viewer);
     assert.equal(canWrite, false);
   });
 
   test("Project member with 'viewer' role is denied write access even if added to project", async () => {
     await db.run("INSERT INTO project_members (id, projectId, userId, role) VALUES ('pm-1', 'proj-1', 'user-viewer', 'viewer')");
-    const viewer = { id: "user-viewer", role: "viewer" };
+    const viewer = { id: "user-viewer", name: "Viewer", email: "viewer@example.com", role: "viewer" };
     const canWrite = await checkProjectWriteAccess(db, "proj-1", viewer);
     assert.equal(canWrite, false);
   });
@@ -99,7 +100,7 @@ describe("RBAC and Access Control Regression Tests", () => {
     await db.run("INSERT INTO team_members (id, teamId, userId) VALUES ('tm-1', 'team-1', 'user-viewer')");
     await db.run("INSERT INTO team_projects (id, teamId, projectId) VALUES ('tp-1', 'team-1', 'proj-1')");
 
-    const viewer = { id: "user-viewer", role: "viewer" };
+    const viewer = { id: "user-viewer", name: "Viewer", email: "viewer@example.com", role: "viewer" };
     const canWrite = await checkProjectWriteAccess(db, "proj-1", viewer);
     assert.equal(canWrite, false, "Viewer must not gain write access through team membership");
   });
@@ -108,18 +109,28 @@ describe("RBAC and Access Control Regression Tests", () => {
     await db.run("INSERT INTO users (id, name, email, role) VALUES ('user-dev2', 'Dev 2', 'dev2@example.com', 'developer')");
     await db.run("INSERT INTO team_members (id, teamId, userId) VALUES ('tm-2', 'team-1', 'user-dev2')");
 
-    const devUser = { id: "user-dev2", role: "developer" };
+    const devUser = { id: "user-dev2", name: "Dev2", email: "dev2@example.com", role: "developer" };
     const canWrite = await checkProjectWriteAccess(db, "proj-1", devUser);
     assert.equal(canWrite, true);
   });
 
-  test("getUserPermissions hydrates complete permissions", async () => {
-    const superPerms = await getUserPermissions(db, "super_admin");
+  test("resolveUserPermissions hydrates complete permissions", async () => {
+    const superPerms = await resolveUserPermissions(db, {
+      id: "user-superadmin",
+      name: "Super",
+      email: "super@example.com",
+      role: "super_admin",
+    });
     assert.equal(superPerms.create_tasks, true);
     assert.equal(superPerms.manage_roles, true);
     assert.equal(superPerms.reset_database, true);
 
-    const viewerPerms = await getUserPermissions(db, "viewer");
+    const viewerPerms = await resolveUserPermissions(db, {
+      id: "user-viewer",
+      name: "Viewer",
+      email: "viewer@example.com",
+      role: "viewer",
+    });
     assert.equal(viewerPerms.create_tasks, false);
     assert.equal(viewerPerms.delete_tasks, false);
   });

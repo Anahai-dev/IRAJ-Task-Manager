@@ -1,55 +1,40 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
 import { LayoutDashboard, Eye, EyeOff, Gitlab, Github, Chrome } from 'lucide-react';
+import { apiGet, apiPost } from '../lib/api';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const [successMsg, setSuccessMsg] = useState('');
-  const { login, refetchUser } = useAuth();
+  const { login } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('verified') === 'true') {
-      setSuccessMsg('Email verified successfully! You can now log in.');
-    }
-  }, []);
-
-  useEffect(() => {
-    const handleMessage = async (event: MessageEvent) => {
+    const handleMessage = (event: MessageEvent) => {
       // Validate origin is from an expected host (run.app or localhost)
       const origin = event.origin;
       if (origin !== window.location.origin) {
         return;
       }
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
-        const fetchedUser = await refetchUser();
-        if (fetchedUser) {
-          login(undefined, fetchedUser);
-        } else if (event.data.user) {
-          login(undefined, event.data.user);
-        }
+        login(undefined, event.data.user);
         navigate('/');
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [login, refetchUser, navigate]);
+  }, [login, navigate]);
 
   const handleGitLabLogin = async () => {
     try {
-      const res = await apiFetchRaw(`/api/auth/gitlab/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get GitLab auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/gitlab/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'gitlab_oauth', 'width=600,height=700');
       if (!authWindow) {
-        setError('Please allow popups to sign in with GitLab.');
+        alert('Please allow popups to sign in with GitLab.');
       }
     } catch (err: any) {
       setError(err.message);
@@ -58,13 +43,11 @@ export default function Login() {
 
   const handleGoogleLogin = async () => {
     try {
-      const res = await apiFetchRaw(`/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get Google auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/google/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'google_oauth', 'width=600,height=700');
       if (!authWindow) {
-        setError('Please allow popups to sign in with Google.');
+        alert('Please allow popups to sign in with Google.');
       }
     } catch (err: any) {
       setError(err.message);
@@ -73,13 +56,11 @@ export default function Login() {
 
   const handleGitHubLogin = async () => {
     try {
-      const res = await apiFetchRaw(`/api/auth/github/url?origin=${encodeURIComponent(window.location.origin)}`);
-      if (!res.ok) throw new Error('Failed to get GitHub auth URL');
-      const data = await res.json();
+      const data = await apiGet<{ url: string }>(`/api/auth/github/url?origin=${encodeURIComponent(window.location.origin)}`);
       
       const authWindow = window.open(data.url, 'github_oauth', 'width=600,height=700');
       if (!authWindow) {
-        setError('Please allow popups to sign in with GitHub.');
+        alert('Please allow popups to sign in with GitHub.');
       }
     } catch (err: any) {
       setError(err.message);
@@ -89,14 +70,7 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await apiFetchRaw('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Login failed');
-      
+      const data = await apiPost<{ user: Parameters<typeof login>[1] }>('/api/auth/login', { email, password });
       login(undefined, data.user);
       navigate('/');
     } catch (err: any) {
@@ -142,7 +116,6 @@ export default function Login() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {successMsg && <div className="rounded border border-green-500/20 bg-green-500/10 p-2 text-xs font-bold text-green-400 uppercase">{successMsg}</div>}
           {error && <div className="rounded border border-red-500/20 bg-red-500/10 p-2 text-xs font-bold text-red-500 uppercase">{error}</div>}
           
           <div className="space-y-1">

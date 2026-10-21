@@ -1,5 +1,3 @@
-import { apiFetchRaw } from "../lib/api";
-import { saveTask } from "../lib/taskService";
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, Navigate, Link } from 'react-router';
 import { useAuth } from '../contexts/AuthContext';
@@ -22,10 +20,11 @@ import {
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Clock, CheckCircle2, Plus, FolderKanban } from 'lucide-react';
 import { cn } from '../lib/utils';
 import TaskModal from '../components/TaskModal';
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { Tooltip } from '../components/Tooltip';
 
 export default function CalendarView() {
-  const { isAuthenticated } = useAuth();
+  const { token } = useAuth();
   const [searchParams] = useSearchParams();
   const projectId = searchParams.get('projectId');
 
@@ -43,14 +42,11 @@ export default function CalendarView() {
 
   const fetchData = async () => {
     try {
-      const [tasksRes, usersRes, projectsRes] = await Promise.all([
-        apiFetchRaw('/api/tasks', { headers: { } }),
-        apiFetchRaw('/api/users', { headers: { } }),
-        apiFetchRaw('/api/projects', { headers: { } })
+      const [tasksData, usersData, projectsData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
       ]);
-      const tasksData = await tasksRes.json();
-      const usersData = await usersRes.json();
-      const projectsData = await projectsRes.json();
       
       setUsers(usersData);
       setAllProjects(projectsData);
@@ -71,17 +67,11 @@ export default function CalendarView() {
 
   useEffect(() => {
     fetchData();
-  }, [isAuthenticated, projectId]);
+  }, [token, projectId]);
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await apiFetchRaw(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
     } catch (err) {
       console.error(err);
@@ -89,25 +79,27 @@ export default function CalendarView() {
   };
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
-    await saveTask({
-      taskData,
-      editingTaskId: selectedTask?.id,
-      onSuccess: () => {
-        setIsModalOpen(false);
-        setSelectedTask(null);
-        setSelectedDateForNewTask(null);
-        fetchData();
+    const isEdit = !!selectedTask;
+
+    try {
+      if (isEdit) {
+        await apiPut(`/api/tasks/${selectedTask!.id}`, taskData);
+      } else {
+        await apiPost('/api/tasks', taskData);
       }
-    });
+      setIsModalOpen(false);
+      setSelectedTask(null);
+      setSelectedDateForNewTask(null);
+      fetchData();
+    } catch (err: any) {
+      console.error(err);
+      alert(`Error saving task: ${err.message}`);
+    }
   };
 
   const handleDeleteTask = async (taskId: string) => {
-
     try {
-      await apiFetchRaw(`/api/tasks/${taskId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
+      await apiDelete(`/api/tasks/${taskId}`);
       setSelectedTask(null);
       fetchData();
     } catch (err) {

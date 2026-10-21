@@ -1,11 +1,9 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
 import { Project, Team } from '../types';
 import { X, Trash2, Plus, LogIn } from 'lucide-react';
 import SearchableSelect from './SearchableSelect';
-import ConfirmModal from './ConfirmModal';
+import { ApiError, apiGet, apiPost, apiPut } from '../lib/api';
 
 interface Props {
   project: Project;
@@ -13,8 +11,7 @@ interface Props {
 }
 
 export default function ProjectTeamsModal({ project, onClose }: Props) {
-  const { isAuthenticated, user: currentUser } = useAuth();
-  const { error } = useToast();
+  const { token, user: currentUser } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
   const [allTeams, setAllTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
@@ -22,17 +19,12 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
   const [addingDesc, setAddingDesc] = useState('');
   const [creating, setCreating] = useState(false);
   const [addingExisting, setAddingExisting] = useState('');
-  const [removeTeamId, setRemoveTeamId] = useState<string | null>(null);
 
   const fetchTeams = async () => {
     try {
-      // Fetch all teams
-      const allRes = await apiFetchRaw('/api/teams', { headers: { } });
-      if (allRes.ok) {
-        const data: Team[] = await allRes.json();
-        setAllTeams(data);
-        setTeams(data.filter((t) => t.projectId === project.id));
-      }
+      const data = await apiGet<Team[]>('/api/teams');
+      setAllTeams(data);
+      setTeams(data.filter((t) => t.projectId === project.id));
     } catch (err) {
       console.error(err);
     } finally {
@@ -49,27 +41,13 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
     if (!addingName.trim()) return;
     setCreating(true);
     try {
-      const res = await apiFetchRaw('/api/teams', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: addingName, description: addingDesc, projectId: project.id })
-      });
-      if (res.ok) {
-        setAddingName('');
-        setAddingDesc('');
-        fetchTeams();
-      } else {
-        let errMessage = 'Failed to create team';
-        try {
-          const errJson = await res.json();
-          errMessage = errJson.error || errJson.message || errMessage;
-        } catch {
-          const err = await res.text();
-          if (err) errMessage = err;
-        }
-        error(errMessage);
-      }
+      await apiPost('/api/teams', { name: addingName, description: addingDesc, projectId: project.id });
+      setAddingName('');
+      setAddingDesc('');
+      fetchTeams();
     } catch(err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to create team';
+      alert(`Failed to create team: ${message}`);
       console.error(err);
     } finally {
       setCreating(false);
@@ -81,35 +59,19 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
     if (!addingExisting) return;
     
     try {
-      const res = await apiFetchRaw(`/api/teams/${addingExisting}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: project.id })
-      });
-      if (res.ok) {
-        setAddingExisting('');
-        fetchTeams();
-      }
+      await apiPut(`/api/teams/${addingExisting}`, { projectId: project.id });
+      setAddingExisting('');
+      fetchTeams();
     } catch (err) {
       console.error(err);
     }
   };
 
-  const handleRemoveFromProject = (teamId: string) => {
-    setRemoveTeamId(teamId);
-  };
-
-  const confirmRemoveFromProject = async () => {
-    if (!removeTeamId) return;
-    const teamId = removeTeamId;
-    setRemoveTeamId(null);
+  const handleRemoveFromProject = async (teamId: string) => {
+    if (!confirm('Are you sure you want to remove this team from the project? (It will become a global team).')) return;
     try {
-      const res = await apiFetchRaw(`/api/teams/${teamId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: null })
-      });
-      if (res.ok) fetchTeams();
+      await apiPut(`/api/teams/${teamId}`, { projectId: null });
+      fetchTeams();
     } catch (err) {
       console.error(err);
     }
@@ -198,15 +160,6 @@ export default function ProjectTeamsModal({ project, onClose }: Props) {
           </div>
         </div>
       </div>
-
-      <ConfirmModal
-        isOpen={Boolean(removeTeamId)}
-        title="Remove Team from Project"
-        message="Are you sure you want to remove this team from the project? It will become a global team."
-        confirmText="Remove Team"
-        onConfirm={confirmRemoveFromProject}
-        onCancel={() => setRemoveTeamId(null)}
-      />
     </div>
   );
 }

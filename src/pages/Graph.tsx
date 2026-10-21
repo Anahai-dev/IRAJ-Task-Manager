@@ -1,22 +1,22 @@
-import { apiFetchRaw } from "../lib/api";
-import { saveTask } from "../lib/taskService";
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { Task, User, Project } from '../types';
 import TaskModal from '../components/TaskModal';
 import { Plus, Search, Filter, FolderKanban, Workflow, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { canCreateTasks } from '../lib/permissions';
 import { useSearchParams, Link, Navigate } from 'react-router';
 import TaskDiagram from '../components/TaskDiagram';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 
+import { apiDelete, apiPost, apiPut, fetchAllPages } from '../lib/api';
 import { Column, DEFAULT_COLUMNS } from './Board';
 
 type SortOption = 'custom' | 'priority' | 'deadline' | 'createdAt';
 type SortDirection = 'asc' | 'desc';
 
 export default function Graph() {
-  const { isAuthenticated, user, can } = useAuth();
+  const { token, user } = useAuth();
   const [searchParams] = useSearchParams();
   const projectId = searchParams.get('projectId');
   
@@ -51,17 +51,13 @@ export default function Graph() {
   }, [projectId]);
 
   const fetchData = async () => {
-    if (!isAuthenticated) return;
+    if (!token) return;
     try {
-      const results = await Promise.all([
-        apiFetchRaw('/api/tasks', { headers: { } }),
-        apiFetchRaw('/api/users', { headers: { } }),
-        apiFetchRaw('/api/projects', { headers: { } })
+      const [tasksData, usersData, projectsData] = await Promise.all([
+        fetchAllPages<Task>('/api/tasks'),
+        fetchAllPages<User>('/api/users'),
+        fetchAllPages<Project>('/api/projects'),
       ]);
-      
-      const tasksData: Task[] = await results[0].json();
-      const usersData = await results[1].json();
-      const projectsData: Project[] = await results[2].json();
       
       setAllProjects(projectsData);
       
@@ -84,7 +80,7 @@ export default function Graph() {
 
   useEffect(() => {
     fetchData();
-  }, [isAuthenticated, projectId]);
+  }, [token, projectId]);
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
@@ -136,25 +132,25 @@ export default function Graph() {
   };
 
   const handleSaveTask = async (taskData: Partial<Task>) => {
-    await saveTask({
-      taskData,
-      editingTaskId: editingTask?.id,
-      onSuccess: () => {
-        setIsModalOpen(false);
-        fetchData();
+    const isEdit = !!editingTask;
+
+    try {
+      if (isEdit) {
+        await apiPut(`/api/tasks/${editingTask!.id}`, taskData);
+      } else {
+        await apiPost('/api/tasks', taskData);
       }
-    });
+      setIsModalOpen(false);
+      fetchData();
+    } catch (err: any) {
+      console.error(err);
+      alert(`Error saving task: ${err.message}`);
+    }
   };
 
   const handleUpdateTask = async (taskId: string, currentTask: Task, updates: Partial<Task>) => {
     try {
-      await apiFetchRaw(`/api/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ ...currentTask, ...updates })
-      });
+      await apiPut(`/api/tasks/${taskId}`, { ...currentTask, ...updates });
       fetchData();
     } catch (err) {
       console.error(err);
@@ -162,13 +158,13 @@ export default function Graph() {
   };
 
   const handleDeleteTask = async (taskId: string) => {
-
-    await apiFetchRaw(`/api/tasks/${taskId}`, {
-      method: 'DELETE',
-      headers: { }
-    });
-    setIsModalOpen(false);
-    fetchData();
+    try {
+      await apiDelete(`/api/tasks/${taskId}`);
+      setIsModalOpen(false);
+      fetchData();
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   if (loading) return <div className="p-8 text-primary">Loading graph...</div>;
@@ -231,7 +227,7 @@ export default function Graph() {
               </h1>
               <div className="text-xs text-subtle mt-1 prose dark:prose-invert prose-sm line-clamp-1">
                 {project.description ? (
-                  <Markdown>{project.description}</Markdown>
+                  <SafeMarkdown>{project.description}</SafeMarkdown>
                 ) : (
                   'Project Task Graph'
                 )}
@@ -288,7 +284,7 @@ export default function Graph() {
             <FolderKanban size={14} className="text-blue-400" />
             <span>TASK BOARD</span>
           </Link>
-          {can('create_tasks') && (
+          {canCreateTasks(user) && (
             <button
               onClick={handleCreateTask}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded shadow hover:scale-105 transition-all flex items-center space-x-2"

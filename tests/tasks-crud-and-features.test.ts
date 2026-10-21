@@ -3,17 +3,19 @@ import assert from "node:assert/strict";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
 import crypto from "crypto";
-import { getUserPermissions } from "../server/routes/auth.routes.js";
+import { resolveUserPermissions } from "../server/rbac.ts";
+import { SqliteWrapper } from "../server/db/sqlite.ts";
 import { eventsService } from "../server/services/events.service.js";
 
 describe("Tasks CRUD, Dependencies, Documents, Roles, and Email Verification Tests", () => {
   let db: any;
 
   before(async () => {
-    db = await open({
+    const sqliteDb = await open({
       filename: ":memory:",
       driver: sqlite3.Database
     });
+    db = new SqliteWrapper(sqliteDb);
 
     await db.exec(`
       CREATE TABLE users (
@@ -185,12 +187,22 @@ describe("Tasks CRUD, Dependencies, Documents, Roles, and Email Verification Tes
 
   test("Roles & Permissions: Fallback and custom roles permissions resolution", async () => {
     // QA role permissions
-    const qaPerms = await getUserPermissions(db, "qa");
+    const qaPerms = await resolveUserPermissions(db, {
+      id: "u-qa",
+      name: "QA",
+      email: "qa@example.com",
+      role: "qa",
+    });
     assert.equal(qaPerms.create_tasks, true, "QA should be permitted to create tasks");
     assert.equal(qaPerms.delete_tasks, false, "QA should not be permitted to delete tasks");
 
     // Viewer role permissions
-    const viewerPerms = await getUserPermissions(db, "viewer");
+    const viewerPerms = await resolveUserPermissions(db, {
+      id: "u-viewer",
+      name: "Viewer",
+      email: "viewer@example.com",
+      role: "viewer",
+    });
     assert.equal(viewerPerms.create_tasks, false, "Viewer cannot create tasks");
     assert.equal(viewerPerms.edit_all_tasks, false, "Viewer cannot edit all tasks");
 
@@ -200,7 +212,12 @@ describe("Tasks CRUD, Dependencies, Documents, Roles, and Email Verification Tes
       ["custom_lead", "Tech Lead", JSON.stringify({ create_tasks: true, edit_all_tasks: true, delete_tasks: true, manage_projects: true })]
     );
 
-    const customPerms = await getUserPermissions(db, "custom_lead");
+    const customPerms = await resolveUserPermissions(db, {
+      id: "u-custom",
+      name: "Lead",
+      email: "lead@example.com",
+      role: "custom_lead",
+    });
     assert.equal(customPerms.create_tasks, true);
     assert.equal(customPerms.manage_projects, true);
     assert.equal(Boolean(customPerms.manage_users), false);

@@ -3,9 +3,14 @@ import assert from "node:assert/strict";
 import crypto from "crypto";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
-import { webhookService } from "../server/services/webhook.service.js";
-import { SqliteWrapper } from "../server/db.js";
-import { encryptSecret } from "../server/config.js";
+import { webhookService } from "../server/services/webhook.service.ts";
+import { SqliteWrapper } from "../server/db/sqlite.ts";
+import { createSecretCipher } from "../server/auth/crypto.ts";
+import { setRuntime } from "../server/runtime.ts";
+import { loadConfig } from "../server/config.ts";
+
+const cipher = createSecretCipher("test-pat-encryption-key-distinct");
+const { encryptSecret, decryptSecretOrEmpty } = cipher;
 
 describe("Webhook Cryptographic HMAC and Token Verification Tests", () => {
   const secret = "super-secret-hmac-key-98765";
@@ -91,6 +96,18 @@ describe("Webhook Cryptographic HMAC and Token Verification Tests", () => {
     );
 
     webhookService.setDb(db);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      SECRET_KEY: "test-secret-key-for-unit-tests-only",
+      TOKEN_ENCRYPTION_KEY: "test-pat-encryption-key-distinct",
+    });
+    setRuntime({
+      getDb: async () => db,
+      config,
+      encryptSecret: cipher.encryptSecret,
+      decryptSecret: decryptSecretOrEmpty,
+      authenticateToken: (_req, _res, next) => next(),
+    });
   });
 
   test("GitHub sha256 HMAC calculates matching signature", () => {
