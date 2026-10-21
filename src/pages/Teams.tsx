@@ -1,17 +1,17 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Team, TeamMember, User, Project } from '../types';
 import { Users, Plus, X, Trash2, Shield, FolderKanban, ChevronDown } from 'lucide-react';
 import { safeFormatDate } from '../lib/utils';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import UserAvatar from '../components/UserAvatar';
 import SearchableSelect from '../components/SearchableSelect';
 import { EmptyState } from '../components/EmptyState';
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 export default function Teams() {
-  const { isAuthenticated, user: currentUser, can } = useAuth();
+  const { token, user: currentUser } = useAuth();
   const { success, error, info } = useToast();
   const [teams, setTeams] = useState<Team[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -22,16 +22,10 @@ export default function Teams() {
   // Data fetching
   const fetchTeams = async () => {
     try {
-      const pRes = await apiFetchRaw('/api/projects', { headers: { }});
-      if (pRes.ok) {
-        setProjects(await pRes.json());
-      }
-      const res = await apiFetchRaw('/api/teams', {
-        headers: { }
-      });
-      if (res.ok) {
-        setTeams(await res.json());
-      }
+      const projectsData = await fetchAllPages<Project>('/api/projects');
+      setProjects(projectsData);
+      const teamsData = await apiGet<Team[]>('/api/teams');
+      setTeams(teamsData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -41,7 +35,7 @@ export default function Teams() {
 
   useEffect(() => {
     fetchTeams();
-  }, [isAuthenticated]);
+  }, [token]);
 
   return (
     <div className="flex h-full flex-col bg-surface-dim">
@@ -50,7 +44,7 @@ export default function Teams() {
           <h1 className="text-xl font-semibold text-strong tracking-tight">Teams</h1>
           <p className="text-xs text-muted mt-1">Manage development teams and members</p>
         </div>
-        {can('manage_teams') && (
+        {(currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'manager') && (
           <button
             onClick={() => setShowCreateModal(true)}
             className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md shadow hover:scale-105 font-bold transition-all text-sm self-end sm:self-auto"
@@ -72,7 +66,7 @@ export default function Teams() {
                   icon={Users}
                   title="No teams available"
                   description="There are no development teams available yet. Create a team to organize your members and assign them to projects."
-                  actionText={can('manage_teams') ? "New Team" : undefined}
+                  actionText={(currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'manager') ? "New Team" : undefined}
                   onAction={() => setShowCreateModal(true)}
                 />
               </div>
@@ -95,7 +89,7 @@ export default function Teams() {
                       {team.ownerId === currentUser?.id && (
                         <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-bold">OWNER</span>
                       )}
-                      {(can('manage_teams') || team.ownerId === currentUser?.id) && (
+                      {(currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || team.ownerId === currentUser?.id) && (
                         <>
                           <button
                             onClick={(e) => {
@@ -115,14 +109,9 @@ export default function Teams() {
                               e.preventDefault();
 
                               try {
-                                const res = await apiFetchRaw(`/api/teams/${team.id}`, {
-                                  method: 'DELETE',
-                                  headers: { }
-                                });
-                                if (res.ok) {
-                                  if (selectedTeam?.id === team.id) setSelectedTeam(null);
-                                  fetchTeams();
-                                }
+                                await apiDelete(`/api/teams/${team.id}`);
+                                if (selectedTeam?.id === team.id) setSelectedTeam(null);
+                                fetchTeams();
                               } catch (err) {
                                 console.error(err);
                               }
@@ -138,7 +127,7 @@ export default function Teams() {
                   </div>
                   <div className="text-xs text-muted mb-4 flex-1 prose dark:prose-invert prose-sm prose-p:my-1 overflow-hidden text-ellipsis line-clamp-2 break-words text-left">
                     {team.description ? (
-                      <Markdown>{team.description}</Markdown>
+                      <SafeMarkdown>{team.description}</SafeMarkdown>
                     ) : (
                       'No description provided.'
                     )}
@@ -186,8 +175,7 @@ export default function Teams() {
 }
 
 function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onClose: () => void, onSuccess: () => void }) {
-  const { isAuthenticated, user } = useAuth();
-  const { error } = useToast();
+  const { token, user } = useAuth();
   const [name, setName] = useState(team?.name || '');
   const [description, setDescription] = useState(team?.description || '');
   const [projectId, setProjectId] = useState(team?.projectId || '');
@@ -196,36 +184,25 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    apiFetchRaw('/api/projects', { headers: { } })
-      .then(r => r.json())
+    fetchAllPages<Project>('/api/projects')
       .then(setProjects)
       .catch(console.error);
-  }, [isAuthenticated]);
+  }, [token]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
     setSubmitting(true);
     try {
-      const res = await apiFetchRaw(team ? `/api/teams/${team.id}` : '/api/teams', {
-        method: team ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description, projectId: projectId || undefined })
-      });
-      if (res.ok) {
-        onSuccess();
+      if (team) {
+        await apiPut(`/api/teams/${team.id}`, { name, description, projectId: projectId || undefined });
       } else {
-        let errMsg = 'Failed to save team';
-        try {
-          const errJson = await res.json();
-          errMsg = errJson.error || errJson.message || errMsg;
-        } catch {
-          const errText = await res.text();
-          if (errText) errMsg = errText;
-        }
-        error(errMsg);
+        await apiPost('/api/teams', { name, description, projectId: projectId || undefined });
       }
+      onSuccess();
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Error saving team';
+      alert(`Error saving team: ${message}`);
       console.error(err);
     } finally {
       setSubmitting(false);
@@ -304,7 +281,7 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
             ) : (
               <div className="w-full h-32 overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-4 rounded border border-border-subtle bg-surface-dim text-primary font-sans text-sm">
                 {description ? (
-                  <Markdown>{description}</Markdown>
+                  <SafeMarkdown>{description}</SafeMarkdown>
                 ) : (
                   <span className="text-subtle italic">No description provided.</span>
                 )}
@@ -335,8 +312,7 @@ function CreateTeamModal({ team, onClose, onSuccess }: { team?: Team | null, onC
 }
 
 function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: () => void, onTeamDeleted: () => void }) {
-  const { isAuthenticated, user: currentUser, can } = useAuth();
-  const { error } = useToast();
+  const { token, user: currentUser } = useAuth();
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [teamProjects, setTeamProjects] = useState<Project[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -347,24 +323,22 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const [addingUser, setAddingUser] = useState(false);
   const [addingProject, setAddingProject] = useState(false);
 
-  const isAdminOrOwner = can('manage_teams') || currentUser?.id === team.ownerId;
+  const isAdminOrOwner = currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.id === team.ownerId;
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [membersRes, usersRes, teamProjectsRes, allProjectsRes] = await Promise.all([
-        apiFetchRaw(`/api/teams/${team.id}/members`, { headers: { } }),
-        apiFetchRaw('/api/users', { headers: { } }),
-        apiFetchRaw(`/api/teams/${team.id}/projects`, { headers: { } }),
-        apiFetchRaw('/api/projects', { headers: { } })
+      const [membersData, usersData, teamProjectsData, allProjectsData] = await Promise.all([
+        apiGet<TeamMember[]>(`/api/teams/${team.id}/members`),
+        fetchAllPages<User>('/api/users'),
+        apiGet<Project[]>(`/api/teams/${team.id}/projects`),
+        fetchAllPages<Project>('/api/projects')
       ]);
-      
-      if (membersRes.ok && usersRes.ok && teamProjectsRes.ok && allProjectsRes.ok) {
-        setMembers(await membersRes.json());
-        setAllUsers(await usersRes.json());
-        setTeamProjects(await teamProjectsRes.json());
-        setAllProjects(await allProjectsRes.json());
-      }
+
+      setMembers(membersData);
+      setAllUsers(usersData);
+      setTeamProjects(teamProjectsData);
+      setAllProjects(allProjectsData);
     } catch (err) {
       console.error(err);
     } finally {
@@ -381,19 +355,12 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
     if (!userToAdd) return;
     setAddingUser(true);
     try {
-      const res = await apiFetchRaw(`/api/teams/${team.id}/members`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: userToAdd })
-      });
-      if (res.ok) {
-        setUserToAdd('');
-        fetchData();
-      } else {
-        const data = await res.json();
-        error(data.error || 'Failed to add member');
-      }
+      await apiPost(`/api/teams/${team.id}/members`, { userId: userToAdd });
+      setUserToAdd('');
+      fetchData();
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to add member';
+      alert(message);
       console.error(err);
     } finally {
       setAddingUser(false);
@@ -403,13 +370,8 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const handleRemoveMember = async (userId: string) => {
 
     try {
-      const res = await apiFetchRaw(`/api/teams/${team.id}/members/${userId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        fetchData();
-      }
+      await apiDelete(`/api/teams/${team.id}/members/${userId}`);
+      fetchData();
     } catch (err) {
       console.error(err);
     }
@@ -420,19 +382,12 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
     if (!projectToAdd) return;
     setAddingProject(true);
     try {
-      const res = await apiFetchRaw(`/api/teams/${team.id}/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: projectToAdd })
-      });
-      if (res.ok) {
-        setProjectToAdd('');
-        fetchData();
-      } else {
-        const data = await res.json();
-        error(data.error || 'Failed to add project');
-      }
+      await apiPost(`/api/teams/${team.id}/projects`, { projectId: projectToAdd });
+      setProjectToAdd('');
+      fetchData();
     } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Failed to add project';
+      alert(message);
       console.error(err);
     } finally {
       setAddingProject(false);
@@ -442,13 +397,8 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const handleRemoveProject = async (projectId: string) => {
 
     try {
-      const res = await apiFetchRaw(`/api/teams/${team.id}/projects/${projectId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        fetchData();
-      }
+      await apiDelete(`/api/teams/${team.id}/projects/${projectId}`);
+      fetchData();
     } catch (err) {
       console.error(err);
     }
@@ -457,13 +407,8 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
   const handleDeleteTeam = async () => {
 
     try {
-      const res = await apiFetchRaw(`/api/teams/${team.id}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        onTeamDeleted();
-      }
+      await apiDelete(`/api/teams/${team.id}`);
+      onTeamDeleted();
     } catch (err) {
       console.error(err);
     }
@@ -500,7 +445,7 @@ function TeamDetails({ team, onClose, onTeamDeleted }: { team: Team, onClose: ()
           <section>
             <h3 className="text-[10px] font-bold text-subtle uppercase tracking-widest mb-3 border-b border-border-subtle pb-1">Description</h3>
             <div className="prose dark:prose-invert prose-sm max-w-none text-primary">
-              <Markdown>{team.description}</Markdown>
+              <SafeMarkdown>{team.description}</SafeMarkdown>
             </div>
           </section>
         )}

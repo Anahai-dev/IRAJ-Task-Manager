@@ -1,17 +1,16 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { Task, User, Project } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useGitFeature } from '../contexts/GitFeatureContext';
 import { X, GitBranch, Edit2, Calendar, Clock, CheckCircle2, Trash, Plus, FolderKanban, GitPullRequest, ExternalLink, ChevronDown } from 'lucide-react';
-import Markdown from 'react-markdown';
+import SafeMarkdown from './SafeMarkdown';
 import { cn, getIncrementedBranchName, safeFormatDate } from '../lib/utils';
+import { canDeleteTasks, canEditAllTasks } from '../lib/permissions';
 import UserAvatar from './UserAvatar';
 import CustomSelect from './CustomSelect';
-import { TaskCommentsThread } from './task-modal/TaskCommentsThread';
-import { TaskActivityList } from './task-modal/TaskActivityList';
-import { TaskSubtasksTree } from './task-modal/TaskSubtasksTree';
+import { apiDelete, apiGet, apiPost, apiPut, fetchAllPages, unwrapList } from '../lib/api';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface TaskModalProps {
   task: Task | null;
@@ -30,22 +29,15 @@ interface TaskModalProps {
 }
 
 export default function TaskModal({ task, users, tasks = [], columns, onClose, onSave, onUpdateTask, onDeleteTask, onCreateSubtask, parentId, projectId, initialStatus, initialDeadline }: TaskModalProps) {
-  const { isAuthenticated, user } = useAuth();
+  const { token, user } = useAuth();
   const { success, error, info } = useToast();
   const { gitEnabled } = useGitFeature();
   const isEdit = !!task;
-  const isSuperAdmin = user?.role === 'super_admin';
-  const hasPerms = !!user?.permissions;
-  const canEditAllTasks = isSuperAdmin || (hasPerms ? !!user?.permissions?.edit_all_tasks : (user?.role === 'admin' || user?.role === 'manager'));
-  const canDeleteTasks = isSuperAdmin || (hasPerms ? !!user?.permissions?.delete_tasks : (user?.role === 'admin' || user?.role === 'manager'));
-  const canCreateTasks = isSuperAdmin || (hasPerms ? !!user?.permissions?.create_tasks : user?.role !== 'viewer');
-  // Contributors editing existing tasks can update progress and comments but not administrative task metadata unless permitted
-  const isDeveloper = !canEditAllTasks && isEdit;
-
-  const canEdit = !isEdit
-    ? canCreateTasks
-    : (canEditAllTasks || user?.id === task?.creatorId || user?.id === task?.assigneeId);
+  const canEdit = canEditAllTasks(user) || user?.id === task?.creatorId || user?.id === task?.assigneeId || !isEdit;
+  const isDeveloper = !canEditAllTasks(user);
   const [isViewMode, setIsViewMode] = useState(isEdit);
+
+  useEscapeKey(onClose);
 
   const getStatusTitle = (id: string) => columns?.find(c => c.id === id)?.title || id.replace('_', ' ');
   
@@ -66,8 +58,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const [projectsList, setProjectsList] = useState<Project[]>([]);
   
   useEffect(() => {
-    apiFetchRaw('/api/projects', { headers: { } })
-      .then(res => res.json())
+    fetchAllPages<Project>('/api/projects')
       .then(data => {
         setProjectsList(data);
         if (data.length === 1 && !formData.projectId) {
@@ -75,20 +66,17 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
         }
       })
       .catch(err => console.error("Error fetching projects", err));
-  }, [isAuthenticated]);
+  }, [token]);
 
   useEffect(() => {
     if (formData.projectId) {
-      apiFetchRaw(`/api/projects/${formData.projectId}/milestones`, { headers: { } })
-        .then(res => res.json())
-        .then(data => {
-          setMilestones(data);
-        })
+      apiGet<unknown>(`/api/projects/${formData.projectId}/milestones`)
+        .then((data) => setMilestones(unwrapList(data)))
         .catch(err => console.error("Error fetching milestones", err));
     } else {
       setMilestones([]);
     }
-  }, [formData.projectId, isAuthenticated]);
+  }, [formData.projectId, token]);
 
   const [generatingBranch, setGeneratingBranch] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
@@ -109,9 +97,9 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
     if (isViewMode && task) {
       setLoadingDetails(true);
       Promise.all([
-        apiFetchRaw(`/api/tasks/${task.id}/details`, { headers: { } }).then(r => r.json()),
-        (task.projectId || projectId) 
-          ? apiFetchRaw(`/api/projects/${task.projectId || projectId}/activity`, { headers: { } }).then(r => r.json()) 
+        apiGet<{ comments?: unknown[]; activities?: unknown[] }>(`/api/tasks/${task.id}/details`),
+        (task.projectId || projectId)
+          ? apiGet<unknown[]>(`/api/projects/${task.projectId || projectId}/activity`)
           : Promise.resolve([])
       ])
       .then(([taskDetails, projectActivityData]) => {
@@ -122,25 +110,16 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
       .catch(err => console.error("Error fetching details", err))
       .finally(() => setLoadingDetails(false));
     }
-  }, [isViewMode, task, isAuthenticated, projectId]);
+  }, [isViewMode, task, token, projectId]);
 
   const handleCreateComment = async () => {
     if (!newComment.trim() || !task) return;
     try {
-      const res = await apiFetchRaw(`/api/tasks/${task.id}/comments`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content: newComment.trim() })
-      });
-      const comment = await res.json();
+      const comment = await apiPost(`/api/tasks/${task.id}/comments`, { content: newComment.trim() });
       setComments([...comments, comment]);
       setNewComment('');
-      // Optionally reload activities since comment adds one
-      apiFetchRaw(`/api/tasks/${task.id}/details`, { headers: { } })
-        .then(res => res.json())
-        .then(data => setActivities(data.activities || []));
+      const data = await apiGet<{ activities?: unknown[] }>(`/api/tasks/${task.id}/details`);
+      setActivities(data.activities || []);
     } catch (err) {
       console.error(err);
     }
@@ -149,14 +128,9 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const handleEditComment = async (commentId: string) => {
     if (!editCommentContent.trim() || !task) return;
     try {
-      const res = await apiFetchRaw(`/api/tasks/${task.id}/comments/${commentId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ content: editCommentContent.trim() })
+      const updatedComment = await apiPut(`/api/tasks/${task.id}/comments/${commentId}`, {
+        content: editCommentContent.trim(),
       });
-      const updatedComment = await res.json();
       setComments(comments.map(c => c.id === commentId ? updatedComment : c));
       setEditingCommentId(null);
       setEditCommentContent('');
@@ -169,11 +143,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
 
     if (!task) return;
     try {
-      await apiFetchRaw(`/api/tasks/${task.id}/comments/${commentId}`, {
-        method: 'DELETE',
-        headers: {
-        }
-      });
+      await apiDelete(`/api/tasks/${task.id}/comments/${commentId}`);
       setComments(comments.filter(c => c.id !== commentId));
       success('Comment deleted');
     } catch (err) {
@@ -221,18 +191,11 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
 
     setGeneratingBranch(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${formData.projectId}/git/branches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          branchName: targetBranch,
-          taskId: task?.id || null
-        })
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const data = await apiPost<{ success?: boolean; branchName?: string; message?: string; error?: string }>(
+        `/api/projects/${formData.projectId}/git/branches`,
+        { branchName: targetBranch, taskId: task?.id || null }
+      );
+      if (data.success) {
         setFormData(prev => ({ ...prev, branchName: data.branchName || targetBranch }));
         success(data.message || `Remote branch '${targetBranch}' created successfully!`);
       } else {
@@ -249,14 +212,11 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
     if (!formData.title) return;
     setGeneratingBranch(true);
     try {
-      const res = await apiFetchRaw('/api/tasks/branch', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ title: formData.title, type: 'feat', projectId: task?.projectId || projectId })
+      const data = await apiPost<{ branchName?: string }>('/api/tasks/branch', {
+        title: formData.title,
+        type: 'feat',
+        projectId: task?.projectId || projectId,
       });
-      const data = await res.json();
       if (data.branchName) {
         setFormData(prev => ({ ...prev, branchName: data.branchName }));
         success('Branch created successfully');
@@ -271,20 +231,12 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   const handleCreateTaskPR = async (t: Task) => {
     if (!t.branchName || !t.projectId) return;
     try {
-      const res = await apiFetchRaw(`/api/projects/${t.projectId}/git/pull-requests`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          taskId: t.id,
-          sourceBranch: t.branchName,
-          title: `[Task] ${t.title}`
-        })
+      const data = await apiPost<{ prUrl?: string }>(`/api/projects/${t.projectId}/git/pull-requests`, {
+        taskId: t.id,
+        sourceBranch: t.branchName,
+        title: `[Task] ${t.title}`,
       });
-
-      const data = await res.json();
-      if (res.ok && data.prUrl) {
+      if (data.prUrl) {
         window.open(data.prUrl, '_blank');
         success('Pull Request link opened!');
       } else {
@@ -300,11 +252,16 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
     const assignee = users.find(u => u.id === task.assigneeId);
     
     return (
-      <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-modal-title"
+        className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300"
+      >
         <div className="my-auto bg-surface border border-border-subtle rounded-lg shadow-2xl w-full max-w-3xl max-h-[calc(100vh-2rem)] md:max-h-[90vh] flex flex-col font-sans overflow-hidden">
           <div className="px-6 py-4 border-b border-border-subtle flex justify-between items-start bg-page-bg">
             <div className="flex-1 pr-4">
-              <h2 className="text-xl font-bold text-strong mb-2">{task.title}</h2>
+              <h2 id="task-modal-title" className="text-xl font-bold text-strong mb-2">{task.title}</h2>
               <div className="flex flex-wrap items-center gap-3 text-xs">
                 <span className={cn(
                   "px-2 py-0.5 rounded font-bold uppercase tracking-wider",
@@ -354,7 +311,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
               </div>
             </div>
             <div className="flex items-center space-x-2 shrink-0">
-              {onDeleteTask && (canDeleteTasks || user?.id === task.creatorId) && (
+              {onDeleteTask && (canDeleteTasks(user) || user?.id === task.creatorId) && (
                 <button
                   onClick={() => {
                     onDeleteTask(task.id);
@@ -419,7 +376,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                         <h3 className="text-[10px] font-bold text-subtle uppercase tracking-widest mb-3 border-b border-border-subtle pb-1">Description</h3>
                         <div className="prose dark:prose-invert prose-sm max-w-none text-primary">
                           {task.description ? (
-                            <Markdown skipHtml={true}>{task.description}</Markdown>
+                            <SafeMarkdown>{task.description}</SafeMarkdown>
                           ) : (
                             <span className="italic text-subtle">No description provided.</span>
                           )}
@@ -444,63 +401,281 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                         </div>
                       )}
 
-                      <TaskSubtasksTree
-                        taskId={task.id}
-                        subtasks={subtasks}
-                        tasks={tasks}
-                        isDeveloper={isDeveloper}
-                        onCreateSubtask={onCreateSubtask}
-                        onUpdateTask={onUpdateTask}
-                        getStatusTitle={getStatusTitle}
-                      />
+                      {true && (
+                        <div>
+                          <div className="flex justify-between items-center mb-3 border-b border-border-subtle pb-1">
+                            <h3 className="text-[10px] font-bold text-subtle uppercase tracking-widest">Subtasks ({subtasks.length})</h3>
+                            {onCreateSubtask && !isDeveloper && (
+                               <button 
+                                 onClick={() => onCreateSubtask(task.id)} 
+                                 className="flex items-center space-x-1 text-[9px] font-bold bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded text-blue-500 hover:bg-blue-500 hover:text-white transition-all hover:scale-105 uppercase tracking-wider"
+                               >
+                                 <Plus size={10} />
+                                 <span>Add Subtask</span>
+                               </button>
+                            )}
+                          </div>
+                          {subtasks.length > 0 ? (
+                            <div className="space-y-2">
+                              {subtasks.map(st => (
+                                <div key={st.id} className="flex items-center justify-between bg-surface p-3 rounded border border-border-subtle">
+                                  <div className="flex items-center space-x-3">
+                                    <button 
+                                      onClick={() => {
+                                        if (onUpdateTask) {
+                                          if (st.status !== 'done') {
+                                            const pendingDeps = (st.dependencies || []).filter(depId => {
+                                              const dep = tasks.find(t => t.id === depId);
+                                              return dep && dep.status !== 'done';
+                                            });
+                                            if (pendingDeps.length > 0) {
+                                              alert(`Cannot complete task. ${pendingDeps.length} dependencies are still pending.`);
+                                              return;
+                                            }
+                                          }
+                                          onUpdateTask(st.id, st, { status: st.status === 'done' ? 'todo' : 'done' });
+                                        }
+                                      }}
+                                      className="focus:outline-none shrink-0 cursor-pointer"
+                                      title={st.status === 'done' ? 'Mark as to do' : 'Mark as done'}
+                                    >
+                                      <CheckCircle2 size={16} className={cn("transition-colors hover:text-green-400", st.status === 'done' ? 'text-green-500' : 'text-border-strong')} />
+                                    </button>
+                                    <span className={cn("text-sm text-strong", st.status === 'done' && 'line-through text-subtle')}>{st.title}</span>
+                                  </div>
+                                  <span className="text-[10px] font-bold uppercase tracking-widest text-subtle bg-surface-dim px-2 py-1 rounded">
+                                    {getStatusTitle(st.status)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-subtle italic p-2 mt-2 border border-border-subtle border-dashed rounded text-center">No subtasks found.</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {activeTab === 'comments' && (
                     <div className="space-y-4 flex flex-col h-full bg-surface rounded p-4 border border-border-subtle">
-                      <TaskCommentsThread
-                        comments={comments}
-                        users={users}
-                        currentUserId={user?.id}
-                        currentUserRole={user?.role}
-                        newComment={newComment}
-                        setNewComment={setNewComment}
-                        newCommentPreviewMode={newCommentPreviewMode}
-                        setNewCommentPreviewMode={setNewCommentPreviewMode}
-                        editingCommentId={editingCommentId}
-                        setEditingCommentId={setEditingCommentId}
-                        editCommentContent={editCommentContent}
-                        setEditCommentContent={setEditCommentContent}
-                        editCommentPreviewMode={editCommentPreviewMode}
-                        setEditCommentPreviewMode={setEditCommentPreviewMode}
-                        handleCreateComment={handleCreateComment}
-                        handleEditComment={handleEditComment}
-                        handleDeleteComment={handleDeleteComment}
-                      />
+                       <div className="flex-1 overflow-y-auto space-y-4 min-h-[200px]">
+                         {loadingDetails ? (
+                           <div className="flex items-center justify-center p-4">
+                             <span className="text-xs text-subtle uppercase tracking-widest font-bold animate-pulse">Loading...</span>
+                           </div>
+                         ) : comments.length > 0 ? (
+                            comments.map(c => {
+                              const author = users.find(u => u.id === c.userId);
+                              const isMe = c.userId === user?.id;
+                              const canModify = isMe || user?.role === 'admin' || user?.role === 'super_admin';
+                              const isEditing = editingCommentId === c.id;
+
+                              return (
+                                <div key={c.id} className="bg-surface-dim border border-border-subtle p-3 rounded group">
+                                  <div className="flex items-center justify-between mb-2">
+                                     <div className="flex items-center space-x-2">
+                                       <span className="text-xs font-bold text-strong">{author ? author.name : 'Unknown'}</span>
+                                       <span className="text-[9px] text-subtle font-mono">{safeFormatDate(c.createdAt, 'MMM d, h:mm a')}</span>
+                                     </div>
+                                     {canModify && !isEditing && (
+                                       <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity space-x-1">
+                                          <button 
+                                            onClick={() => { setEditingCommentId(c.id); setEditCommentContent(c.content); }}
+                                            className="text-subtle hover:text-blue-400 p-0.5 rounded transition-colors"
+                                            title="Edit comment"
+                                          >
+                                            <Edit2 size={12} />
+                                          </button>
+                                          <button 
+                                            onClick={() => handleDeleteComment(c.id)}
+                                            className="text-subtle hover:text-red-400 p-0.5 rounded transition-colors"
+                                            title="Delete comment"
+                                          >
+                                            <Trash size={12} />
+                                          </button>
+                                       </div>
+                                     )}
+                                  </div>
+                                  
+                                  {isEditing ? (
+                                    <div className="space-y-2 mt-2 border-t border-border-subtle pt-2">
+                                      <div className="flex justify-between items-center mb-1">
+                                        <label className="text-[9px] font-bold text-subtle uppercase tracking-widest block">Edit Comment (Markdown)</label>
+                                        <div className="flex space-x-1 bg-surface-dim border border-border-subtle rounded p-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditCommentPreviewMode(false)}
+                                            className={`px-3 py-1 text-[9px] font-bold rounded-sm uppercase tracking-wider ${!editCommentPreviewMode ? 'bg-surface-accent text-strong' : 'text-subtle hover:text-strong'}`}
+                                          >
+                                            Edit View
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditCommentPreviewMode(true)}
+                                            className={`px-3 py-1 text-[9px] font-bold rounded-sm uppercase tracking-wider ${editCommentPreviewMode ? 'bg-surface-accent text-strong' : 'text-subtle hover:text-strong'}`}
+                                          >
+                                            Split View
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <div className={`flex gap-2 ${editCommentPreviewMode ? 'h-32' : 'h-16'}`}>
+                                        <textarea
+                                          className={`bg-surface-dim border border-border-subtle rounded px-3 py-2 text-sm text-strong focus:outline-none focus:border-blue-500 font-mono resize-y min-h-[64px] h-full flex-1 ${editCommentPreviewMode ? 'w-1/2' : 'w-full'}`}
+                                          value={editCommentContent}
+                                          onChange={e => setEditCommentContent(e.target.value)}
+                                        />
+                                        {editCommentPreviewMode && (
+                                          <div className="w-1/2 overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-2 rounded border border-border-subtle bg-surface-dim text-primary font-sans h-full">
+                                            {editCommentContent ? (
+                                              <SafeMarkdown>{editCommentContent}</SafeMarkdown>
+                                            ) : (
+                                              <span className="text-subtle italic">Preview...</span>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="flex justify-end space-x-2 mt-2">
+                                        <button 
+                                          onClick={() => setEditingCommentId(null)}
+                                          className="text-[10px] font-bold uppercase tracking-widest text-muted hover:text-strong px-2 py-1"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button 
+                                          onClick={() => handleEditComment(c.id)}
+                                          disabled={!editCommentContent.trim()}
+                                          className="text-[10px] font-bold uppercase tracking-widest bg-blue-600 hover:bg-blue-500 text-strong px-3 py-1 rounded disabled:opacity-50"
+                                        >
+                                          Save
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="prose dark:prose-invert prose-sm max-w-none text-primary">
+                                      <SafeMarkdown>{c.content}</SafeMarkdown>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })
+                         ) : (
+                           <div className="text-sm text-subtle italic p-4 text-center">No comments yet.</div>
+                         )}
+                       </div>
+                       <div className="mt-auto shrink-0 flex flex-col space-y-2 pt-4 border-t border-border-subtle">
+                         <div className="flex justify-between items-center mb-1">
+                           <label className="text-[9px] font-bold text-subtle uppercase tracking-widest block">New Comment (Markdown)</label>
+                           <div className="flex space-x-1 bg-surface-dim border border-border-subtle rounded p-0.5">
+                             <button
+                               type="button"
+                               onClick={() => setNewCommentPreviewMode(false)}
+                               className={`px-3 py-1 text-[9px] font-bold rounded-sm uppercase tracking-wider ${!newCommentPreviewMode ? 'bg-surface-accent text-strong' : 'text-subtle hover:text-strong'}`}
+                             >
+                               Edit View
+                             </button>
+                             <button
+                               type="button"
+                               onClick={() => setNewCommentPreviewMode(true)}
+                               className={`px-3 py-1 text-[9px] font-bold rounded-sm uppercase tracking-wider ${newCommentPreviewMode ? 'bg-surface-accent text-strong' : 'text-subtle hover:text-strong'}`}
+                             >
+                               Split View
+                             </button>
+                           </div>
+                         </div>
+                         <div className={`flex gap-2 ${newCommentPreviewMode ? 'h-32' : 'h-16'}`}>
+                           <textarea 
+                             className={`bg-surface-dim border border-border-subtle rounded px-3 py-2 text-sm text-strong resize-y min-h-[64px] focus:outline-none focus:border-blue-500 font-mono h-full flex-1 ${newCommentPreviewMode ? 'w-1/2' : 'w-full'}`}
+                             placeholder="Write a comment... Supports markdown."
+                             value={newComment}
+                             onChange={e => setNewComment(e.target.value)}
+                           />
+                           {newCommentPreviewMode && (
+                             <div className="w-1/2 overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-2 rounded border border-border-subtle bg-surface-dim text-primary font-sans h-full">
+                               {newComment ? (
+                                 <SafeMarkdown>{newComment}</SafeMarkdown>
+                               ) : (
+                                 <span className="text-subtle italic">Preview...</span>
+                               )}
+                             </div>
+                           )}
+                         </div>
+                         <div className="flex justify-end mt-2">
+                           <button 
+                             onClick={() => { handleCreateComment(); setNewCommentPreviewMode(false); }}
+                             disabled={!newComment.trim()}
+                             className="bg-blue-600 hover:bg-blue-500 text-strong font-bold text-[10px] uppercase tracking-widest rounded px-4 py-2 disabled:opacity-50 transition-colors"
+                           >
+                             Post Comment
+                           </button>
+                         </div>
+                       </div>
                     </div>
                   )}
 
                   {activeTab === 'activity' && (
                     <div className="space-y-4 bg-surface rounded p-4 border border-border-subtle min-h-[200px]">
-                      <TaskActivityList
-                        activities={activities}
-                        users={users}
-                        loading={loadingDetails}
-                        emptyMessage="No task activity recorded."
-                      />
+                      {loadingDetails ? (
+                        <div className="flex items-center justify-center p-4">
+                          <span className="text-xs text-subtle uppercase tracking-widest font-bold animate-pulse">Loading...</span>
+                        </div>
+                       ) : activities.length > 0 ? (
+                        <div className="space-y-4 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-border-strong before:to-transparent">
+                          {activities.map(a => {
+                            const author = users.find(u => u.id === a.userId);
+                            return (
+                              <div key={a.id} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                                  <div className="flex items-center justify-center w-10 h-10 shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow-lg relative z-10 rounded-full">
+                                    <UserAvatar user={author} showTooltip={false} className="w-10 h-10 text-base" />
+                                  </div>
+                                 <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-3 rounded border border-border-strong bg-surface-accent shadow">
+                                   <div className="flex items-center justify-between mb-1">
+                                      <div className="font-bold text-strong text-xs">{author ? author.name : 'Unknown User'}</div>
+                                      <time className="font-mono text-[9px] text-muted">{safeFormatDate(a.createdAt, 'MMM d, h:mm a')}</time>
+                                   </div>
+                                   <div className="text-xs text-primary">{a.action}</div>
+                                 </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                         <div className="text-sm text-subtle italic p-4 text-center">No task activity recorded.</div>
+                      )}
                     </div>
                   )}
 
                   {activeTab === 'project_activity' && (
                     <div className="space-y-4 bg-surface rounded p-4 border border-border-subtle min-h-[200px]">
-                      <TaskActivityList
-                        activities={projectActivities}
-                        users={users}
-                        tasks={tasks}
-                        loading={loadingDetails}
-                        emptyMessage="No project activity recorded."
-                        showTaskRef={true}
-                      />
+                      {loadingDetails ? (
+                        <div className="flex items-center justify-center p-4">
+                          <span className="text-xs text-subtle uppercase tracking-widest font-bold animate-pulse">Loading...</span>
+                        </div>
+                      ) : projectActivities.length > 0 ? (
+                        <div className="space-y-4 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-border-strong before:to-transparent">
+                          {projectActivities.map(a => {
+                            const author = users.find(u => u.id === a.userId);
+                            const taskRef = tasks?.find(t => t.id === a.taskId);
+                            return (
+                              <div key={a.id} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
+                                  <div className="flex items-center justify-center w-10 h-10 shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow-lg relative z-10 rounded-full">
+                                    <UserAvatar user={author} showTooltip={false} className="w-10 h-10 text-base" />
+                                  </div>
+                                 <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-3 rounded border border-border-strong bg-surface-accent shadow">
+                                   <div className="flex items-center justify-between mb-1">
+                                      <div className="font-bold text-strong text-xs">{author ? author.name : 'Unknown User'}</div>
+                                      <time className="font-mono text-[9px] text-muted">{safeFormatDate(a.createdAt, 'MMM d, h:mm a')}</time>
+                                   </div>
+                                   <div className="text-xs text-primary">{a.action}</div>
+                                   {taskRef && <div className="text-[10px] text-muted mt-1 uppercase">Task: {taskRef.title}</div>}
+                                 </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                         <div className="text-sm text-subtle italic p-4 text-center">No project activity recorded.</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -554,10 +729,15 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
   }
 
   return (
-    <div className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="task-form-title"
+      className="fixed inset-y-0 right-0 left-0 md:left-[var(--sidebar-width,80px)] z-50 overflow-y-auto flex justify-center items-start p-4 bg-black/80 backdrop-blur-sm transition-all duration-300"
+    >
       <div className="my-auto bg-surface border border-border-subtle rounded-lg shadow-2xl w-full max-w-3xl max-h-[calc(100vh-2rem)] md:max-h-[90vh] flex flex-col font-sans">
         <div className="px-6 py-4 border-b border-border-subtle flex justify-between items-center bg-page-bg rounded-t-lg">
-          <h2 className="text-sm font-bold text-strong uppercase tracking-widest">{isEdit ? 'Edit Task' : 'Create Task'}</h2>
+          <h2 id="task-form-title" className="text-sm font-bold text-strong uppercase tracking-widest">{isEdit ? 'Edit Task' : 'Create Task'}</h2>
           <button onClick={onClose} className="text-subtle hover:text-red-400 transition-colors">
             <X size={18} />
           </button>
@@ -579,7 +759,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
             <div className="space-y-1">
               <label className="text-[9px] font-bold text-subtle uppercase tracking-widest block font-sans">Status</label>
               <CustomSelect
-                value={formData.status || 'todo'}
+                value={formData.status ?? "todo"}
                 onChange={(val) => setFormData(p => ({ ...p, status: val as any }))}
                 options={(columns || [
                   { id: 'todo', title: 'To Do' },
@@ -595,7 +775,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
               <label className="text-[9px] font-bold text-subtle uppercase tracking-widest block font-sans">Priority</label>
               <CustomSelect
                 disabled={isDeveloper}
-                value={formData.priority || 'medium'}
+                value={formData.priority ?? "medium"}
                 onChange={(val) => setFormData(p => ({ ...p, priority: val as any }))}
                 options={[
                   { value: 'low', label: 'LOW' },
@@ -721,10 +901,12 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
                 <span className="text-[10px] text-muted">💡 Increment suggestion:</span>
                 <button
                   type="button"
-                  onClick={() => {
-                    const inc = formData.branchName ? getIncrementedBranchName(formData.branchName) : null;
-                    if (inc) setFormData(p => ({ ...p, branchName: inc }));
-                  }}
+                  onClick={() =>
+                    setFormData(p => ({
+                      ...p,
+                      branchName: getIncrementedBranchName(formData.branchName ?? "") || "",
+                    }))
+                  }
                   className="px-2 py-0.5 text-[10px] font-mono font-semibold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 rounded transition-all"
                 >
                   {getIncrementedBranchName(formData.branchName)}
@@ -767,7 +949,7 @@ export default function TaskModal({ task, users, tasks = [], columns, onClose, o
               {previewMode && (
                 <div className="w-1/2 h-full overflow-y-auto prose dark:prose-invert prose-sm max-w-none p-4 rounded border border-border-subtle bg-surface-dim text-primary font-sans text-sm">
                   {formData.description ? (
-                    <Markdown skipHtml={true}>{formData.description}</Markdown>
+                    <SafeMarkdown>{formData.description}</SafeMarkdown>
                   ) : (
                     <span className="text-subtle italic">No description provided.</span>
                   )}

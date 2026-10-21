@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { v4 as uuidv4 } from "uuid";
-import { dbPromise } from "../db.js";
-import { getAuthorizedProjectUserIds, isAdminOrSuperAdmin } from "../middleware/auth.js";
+import { R } from "../runtime.ts";
+import { getAuthorizedProjectUserIds, isAdminOrSuperAdmin } from "../rbac.ts";
 
 export interface SseClient {
   id: string;
@@ -109,7 +109,7 @@ class EventsService {
 
     if (projectId) {
       try {
-        const db = await dbPromise;
+        const db = await R().getDb();
         authorizedUserIds = await getAuthorizedProjectUserIds(db, projectId);
       } catch (err: any) {
         console.error("[SSE] Database error during broadcast authorization:", err.message);
@@ -133,7 +133,8 @@ class EventsService {
 
       // If targeted to a project, verify client has access to this project
       if (projectId) {
-        const isGlobalAdmin = isAdminOrSuperAdmin({ role: client.userRole });
+        const isGlobalAdmin =
+          client.userRole === "super_admin" || client.userRole === "admin";
         if (!isGlobalAdmin) {
           if (!authorizedUserIds || !authorizedUserIds.has(client.userId)) {
             continue; // Drop broadcast for unauthorized user
@@ -155,7 +156,7 @@ class EventsService {
     }
   ) {
     try {
-      const db = await dbPromise;
+      const db = await R().getDb();
       const notifId = uuidv4();
       const createdAt = new Date().toISOString();
 

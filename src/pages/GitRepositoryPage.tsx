@@ -1,4 +1,3 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -12,10 +11,10 @@ import {
   Code2, AlertCircle, Sparkles, ChevronDown
 } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
-import { GitSettingsPanel } from '../components/git/GitSettingsPanel';
+import { apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 export default function GitRepositoryPage() {
-  const { isAuthenticated, user, can } = useAuth();
+  const { token, user } = useAuth();
   const { success, error, info } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -37,11 +36,6 @@ export default function GitRepositoryPage() {
   const [repoName, setRepoName] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [repoToken, setRepoToken] = useState('');
-  const [webhookSecret, setWebhookSecret] = useState('');
-  const [hasWebhookSecret, setHasWebhookSecret] = useState(false);
-  const [generatingSecret, setGeneratingSecret] = useState(false);
-  const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false);
-  const [copiedSecret, setCopiedSecret] = useState(false);
   const [defaultBranch, setDefaultBranch] = useState('main');
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -64,15 +58,11 @@ export default function GitRepositoryPage() {
     if (!selectedProjectId) return;
     setSyncingPRs(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${selectedProjectId}/git/pull-requests/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        if (data.updatedCount > 0) {
+      const data = await apiPost<{ success?: boolean; updatedCount?: number; error?: string }>(
+        `/api/projects/${selectedProjectId}/git/pull-requests/sync`
+      );
+      if (data.success) {
+        if (data.updatedCount && data.updatedCount > 0) {
           success(`Successfully synchronized PRs! Updated ${data.updatedCount} task(s).`);
         } else {
           info('All Pull Request statuses are already up to date!');
@@ -93,22 +83,17 @@ export default function GitRepositoryPage() {
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const res = await apiFetchRaw('/api/projects', {
-          headers: { }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setProjects(data);
-          if (data.length > 0 && !selectedProjectId) {
-            setSelectedProjectId(data[0].id);
-          }
+        const data = await fetchAllPages<Project>('/api/projects');
+        setProjects(data);
+        if (data.length > 0 && !selectedProjectId) {
+          setSelectedProjectId(data[0].id);
         }
       } catch (err) {
         console.error("Failed to load projects:", err);
       }
     };
     fetchProjects();
-  }, [isAuthenticated]);
+  }, [token]);
 
   // Sync active project state
   useEffect(() => {
@@ -121,8 +106,6 @@ export default function GitRepositoryPage() {
         setRepoName(p.repoName || '');
         setRepoUrl(p.repoUrl || '');
         setRepoToken(p.repoToken || '');
-        setWebhookSecret(p.webhookSecret || '');
-        setHasWebhookSecret(Boolean(p.hasWebhookSecret || p.webhookSecret));
         setDefaultBranch(p.defaultBranch || 'main');
         setBaseBranch(p.defaultBranch || 'main');
         setPrTargetBranch(p.defaultBranch || 'main');
@@ -135,42 +118,16 @@ export default function GitRepositoryPage() {
     }
   }, [selectedProjectId, projects]);
 
-  const handleGenerateWebhookSecret = async () => {
-    if (!selectedProjectId) return;
-    setGeneratingSecret(true);
-    try {
-      const res = await apiFetchRaw(`/api/projects/${selectedProjectId}/webhook-secret/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed to generate webhook secret');
-      }
-      const data = await res.json();
-      setWebhookSecret(data.secret);
-      setHasWebhookSecret(true);
-      success('New webhook secret generated! Copy and paste it into GitHub / GitLab webhook settings.');
-    } catch (err: any) {
-      error(err.message || 'Error generating secret');
-    } finally {
-      setGeneratingSecret(false);
-    }
-  };
-
   const fetchBranches = async () => {
     if (!selectedProjectId) return;
     setLoading(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${selectedProjectId}/git/branches`, {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setBranches(data.branches || []);
-        if (data.error) {
-          info(`Git notice: ${data.error}`);
-        }
+      const data = await apiGet<{ branches?: GitBranch[]; error?: string }>(
+        `/api/projects/${selectedProjectId}/git/branches`
+      );
+      setBranches(data.branches || []);
+      if (data.error) {
+        info(`Git notice: ${data.error}`);
       }
     } catch (err: any) {
       console.error("Failed to load branches:", err);
@@ -182,12 +139,8 @@ export default function GitRepositoryPage() {
   const fetchTasks = async () => {
     if (!selectedProjectId) return;
     try {
-      const res = await apiFetchRaw(`/api/tasks?projectId=${selectedProjectId}`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setTasks(await res.json());
-      }
+      const data = await fetchAllPages<Task>(`/api/tasks?projectId=${selectedProjectId}`);
+      setTasks(data);
     } catch (err) {
       console.error("Failed to fetch project tasks:", err);
     }
@@ -200,7 +153,7 @@ export default function GitRepositoryPage() {
     }
   }, [selectedProjectId]);
 
-  const isManagerOrAdmin = Boolean(user && (can('manage_projects') || (activeProject && activeProject.ownerId === user.id)));
+  const isManagerOrAdmin = user?.role === 'admin' || user?.role === 'super_admin' || user?.role === 'manager' || (activeProject && activeProject.ownerId === user?.id);
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -214,28 +167,15 @@ export default function GitRepositoryPage() {
     }
     setSavingSettings(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${selectedProjectId}/repo`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          repoProvider,
-          repoOwner,
-          repoName,
-          repoUrl,
-          repoToken,
-          webhookSecret,
-          defaultBranch
-        })
+      const updated = await apiPut<Project>(`/api/projects/${selectedProjectId}/repo`, {
+        repoProvider,
+        repoOwner,
+        repoName,
+        repoUrl,
+        repoToken,
+        defaultBranch
       });
 
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Failed to save repository settings');
-      }
-
-      const updated = await res.json();
       setActiveProject(updated);
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
       success('Repository integration configured successfully');
@@ -261,20 +201,16 @@ export default function GitRepositoryPage() {
 
     setCreatingBranch(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${selectedProjectId}/git/branches`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const data = await apiPost<{ success?: boolean; error?: string; remoteError?: string; message?: string }>(
+        `/api/projects/${selectedProjectId}/git/branches`,
+        {
           branchName: newBranchName.trim().toUpperCase(),
           taskId: selectedTaskId || null,
           baseBranch
-        })
-      });
+        }
+      );
 
-      const data = await res.json();
-      if (!res.ok || !data.success) {
+      if (!data.success) {
         throw new Error(data.error || data.remoteError || 'Failed to create branch');
       }
 
@@ -304,22 +240,18 @@ export default function GitRepositoryPage() {
 
     setCreatingPR(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${selectedProjectId}/git/pull-requests`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      const data = await apiPost<{ prUrl?: string; isFallback?: boolean }>(
+        `/api/projects/${selectedProjectId}/git/pull-requests`,
+        {
           taskId: prTaskId || null,
           sourceBranch: prSourceBranch,
           targetBranch: prTargetBranch || defaultBranch || 'main',
           title: prTitle || `Merge ${prSourceBranch} into ${prTargetBranch || 'main'}`,
           description: prDescription
-        })
-      });
+        }
+      );
 
-      const data = await res.json();
-      if (res.ok && data.prUrl) {
+      if (data.prUrl) {
         window.open(data.prUrl, '_blank');
         if (data.isFallback) {
           info('Credentials unconfigured or API connection failed. Opened web compare page in a new tab for manual creation!');
@@ -937,33 +869,143 @@ export default function GitRepositoryPage() {
 
           {/* TAB 4: REPOSITORY SETTINGS */}
           {activeTab === 'settings' && (
-            <GitSettingsPanel
-              repoProvider={repoProvider}
-              setRepoProvider={setRepoProvider}
-              defaultBranch={defaultBranch}
-              setDefaultBranch={setDefaultBranch}
-              repoUrl={repoUrl}
-              setRepoUrl={setRepoUrl}
-              repoOwner={repoOwner}
-              setRepoOwner={setRepoOwner}
-              repoName={repoName}
-              setRepoName={setRepoName}
-              repoToken={repoToken}
-              setRepoToken={setRepoToken}
-              webhookSecret={webhookSecret}
-              setWebhookSecret={setWebhookSecret}
-              hasWebhookSecret={hasWebhookSecret}
-              generatingSecret={generatingSecret}
-              handleGenerateWebhookSecret={handleGenerateWebhookSecret}
-              handleSaveSettings={handleSaveSettings}
-              savingSettings={savingSettings}
-              isManagerOrAdmin={isManagerOrAdmin}
-              selectedProjectId={selectedProjectId}
-              copiedWebhookUrl={copiedWebhookUrl}
-              setCopiedWebhookUrl={setCopiedWebhookUrl}
-              copiedSecret={copiedSecret}
-              setCopiedSecret={setCopiedSecret}
-            />
+            !isManagerOrAdmin ? (
+              <div className="p-8 text-center space-y-3 bg-surface-dim rounded-xl border border-border-subtle my-4">
+                <Shield size={36} className="mx-auto text-amber-500" />
+                <h3 className="text-sm font-bold text-strong">Integration Settings Restricted</h3>
+                <p className="text-xs text-muted max-w-md mx-auto">
+                  Repository integration configurations (URL, Personal Access Tokens, default branch) can only be altered by Project Managers, System Administrators, or the Project Owner.
+                </p>
+              </div>
+            ) : (
+            <form onSubmit={handleSaveSettings} className="max-w-2xl space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-subtle mb-1">
+                    Git Provider
+                  </label>
+                  <div className="flex space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setRepoProvider('github')}
+                      className={`flex-1 flex items-center justify-center space-x-2 py-2.5 border rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
+                        repoProvider === 'github'
+                          ? 'bg-blue-500/10 border-blue-500 text-blue-400'
+                          : 'bg-surface-dim border-border-subtle text-muted hover:text-strong'
+                      }`}
+                    >
+                      <Github size={16} />
+                      <span>GitHub</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRepoProvider('gitlab')}
+                      className={`flex-1 flex items-center justify-center space-x-2 py-2.5 border rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
+                        repoProvider === 'gitlab'
+                          ? 'bg-amber-500/10 border-amber-500 text-amber-400'
+                          : 'bg-surface-dim border-border-subtle text-muted hover:text-strong'
+                      }`}
+                    >
+                      <Gitlab size={16} />
+                      <span>GitLab</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-subtle mb-1">
+                    Default Branch
+                  </label>
+                  <input
+                    type="text"
+                    value={defaultBranch}
+                    onChange={(e) => setDefaultBranch(e.target.value)}
+                    placeholder="main"
+                    className="w-full px-3 py-2 text-xs font-mono bg-surface-dim border border-border-subtle rounded-lg text-strong focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-subtle mb-1">
+                  Repository URL
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={repoUrl}
+                    onChange={(e) => {
+                      setRepoUrl(e.target.value);
+                      try {
+                        const parsed = new URL(e.target.value);
+                        const parts = parsed.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/');
+                        if (parts.length >= 2) {
+                          setRepoOwner(parts[0]);
+                          setRepoName(parts.slice(1).join('/'));
+                        }
+                      } catch (err) {}
+                    }}
+                    placeholder="https://github.com/owner/repository"
+                    className="w-full pl-8 pr-3 py-2 text-xs bg-surface-dim border border-border-subtle rounded-lg text-strong focus:outline-none focus:border-blue-500"
+                  />
+                  <LinkIcon size={14} className="absolute left-2.5 top-2.5 text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-subtle mb-1">
+                    Owner / Organization
+                  </label>
+                  <input
+                    type="text"
+                    value={repoOwner}
+                    onChange={(e) => setRepoOwner(e.target.value)}
+                    placeholder="e.g. facebook or devteam"
+                    className="w-full px-3 py-2 text-xs bg-surface-dim border border-border-subtle rounded-lg text-strong focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-subtle mb-1">
+                    Repository Name
+                  </label>
+                  <input
+                    type="text"
+                    value={repoName}
+                    onChange={(e) => setRepoName(e.target.value)}
+                    placeholder="e.g. react or backend-api"
+                    className="w-full px-3 py-2 text-xs bg-surface-dim border border-border-subtle rounded-lg text-strong focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-subtle mb-1 flex items-center justify-between">
+                  <span>Personal Access Token (PAT)</span>
+                  <span className="text-[10px] text-muted font-normal lowercase">Enables live branch listing & remote creation</span>
+                </label>
+                <input
+                  type="password"
+                  value={repoToken}
+                  onChange={(e) => setRepoToken(e.target.value)}
+                  placeholder="github_pat_... or glpat-..."
+                  className="w-full px-3 py-2 text-xs font-mono bg-surface-dim border border-border-subtle rounded-lg text-strong focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={savingSettings}
+                  className="flex items-center space-x-2 px-5 py-2.5 text-xs font-bold uppercase tracking-wider bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-all shadow-md disabled:opacity-50"
+                >
+                  <CheckCircle2 size={14} />
+                  <span>{savingSettings ? 'Saving Settings...' : 'Save Integration Settings'}</span>
+                </button>
+              </div>
+            </form>
+            )
           )}
 
         </div>

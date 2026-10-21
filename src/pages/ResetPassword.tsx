@@ -1,8 +1,8 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router';
 import { LayoutDashboard, Eye, EyeOff } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
+import { apiPost } from '../lib/api';
 
 export default function ResetPassword() {
   const { token } = useParams<{ token: string }>();
@@ -26,14 +26,7 @@ export default function ResetPassword() {
       setError('');
       setLoading(true);
 
-      const res = await apiFetchRaw('/api/auth/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, newPassword: password }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to reset password');
+      await apiPost('/api/auth/reset-password', { token, newPassword: password });
 
       setSuccess(true);
       toast("Password reset successfully. You can now login.", 'success');

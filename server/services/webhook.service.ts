@@ -3,9 +3,8 @@ import dns from "dns";
 import net from "net";
 import { Agent, fetch } from "undici";
 import { v4 as uuidv4 } from "uuid";
-import { dbPromise } from "../db.js";
-import { DatabaseWrapper } from "../types.js";
-import { decryptSecret } from "../config.js";
+import { R } from "../runtime.ts";
+import type { DatabaseWrapper } from "../types.ts";
 import { eventsService } from "./events.service.js";
 
 export interface OutboundWebhookRecord {
@@ -173,7 +172,7 @@ export class WebhookService {
 
   private async getDb(): Promise<DatabaseWrapper> {
     if (this.customDb) return this.customDb;
-    return await dbPromise;
+    return await R().getDb();
   }
 
   /**
@@ -254,7 +253,7 @@ export class WebhookService {
     };
 
     if (webhook.secret) {
-      const rawSecret = decryptSecret(webhook.secret) || webhook.secret;
+      const rawSecret = R().decryptSecret(String(webhook.secret)) || webhook.secret;
       const signature = crypto
         .createHmac("sha256", rawSecret)
         .update(payloadString)
@@ -396,7 +395,7 @@ export class WebhookService {
       throw new Error("Project webhook secret is not configured");
     }
 
-    const secret = decryptSecret(project.webhookSecret);
+    const secret = R().decryptSecret(String(project.webhookSecret));
     if (!secret) {
       throw new Error("Unable to decrypt project webhook secret");
     }
@@ -553,7 +552,7 @@ export class WebhookService {
       throw new Error("Project webhook secret is not configured");
     }
 
-    const secret = decryptSecret(project.webhookSecret);
+    const secret = R().decryptSecret(String(project.webhookSecret));
     if (!secret) {
       throw new Error("Unable to decrypt project webhook secret");
     }

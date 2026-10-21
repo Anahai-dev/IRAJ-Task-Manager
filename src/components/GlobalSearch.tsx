@@ -1,4 +1,3 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect, useRef } from "react";
 import {
   Search,
@@ -10,6 +9,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { cn } from "../lib/utils";
+import { apiGet } from "../lib/api";
 import { motion, AnimatePresence } from "motion/react";
 
 interface SearchResult {
@@ -51,18 +51,17 @@ export default function GlobalSearch() {
     const fetchResults = async () => {
       setIsLoading(true);
       try {
-        const res = await apiFetchRaw(
-          `/api/search?q=${encodeURIComponent(debouncedQuery)}`,
-          {
-            headers: {
-              "X-Silent-Fetch": "true",
-            },
+        const data = await apiGet<{
+          projects: SearchResult[];
+          tasks: SearchResult[];
+          documents: SearchResult[];
+          users: SearchResult[];
+        }>(`/api/search?q=${encodeURIComponent(debouncedQuery)}`, {
+          headers: {
+            "X-Silent-Fetch": "true",
           },
-        );
-        if (res.ok) {
-          const data = await res.json();
-          setResults(data);
-        }
+        });
+        setResults(data);
       } catch (e) {
         console.error("Search error", e);
       } finally {

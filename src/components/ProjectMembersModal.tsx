@@ -1,11 +1,10 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
 import { Project, User, ProjectMember } from '../types';
 import { X, Trash2, UserPlus, Settings, Shield, ChevronDown } from 'lucide-react';
 import UserAvatar from './UserAvatar';
 import CustomSelect from './CustomSelect';
+import { apiDelete, apiGet, apiPost } from '../lib/api';
 
 interface Props {
   project: Project;
@@ -14,8 +13,7 @@ interface Props {
 }
 
 export default function ProjectMembersModal({ project, allUsers, onClose }: Props) {
-  const { isAuthenticated, user: currentUser, can } = useAuth();
-  const { error } = useToast();
+  const { token, user: currentUser } = useAuth();
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedUserId, setSelectedUserId] = useState('');
@@ -24,12 +22,8 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
 
   const fetchMembers = async () => {
     try {
-      const res = await apiFetchRaw(`/api/projects/${project.id}/members`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setMembers(await res.json());
-      }
+      const data = await apiGet<ProjectMember[]>(`/api/projects/${project.id}/members`);
+      setMembers(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -46,29 +40,13 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
     if (!selectedUserId) return;
     setAdding(true);
     try {
-      const res = await apiFetchRaw(`/api/projects/${project.id}/members`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ userId: selectedUserId, role: selectedRole })
-      });
-      if (res.ok) {
-        setSelectedUserId('');
-        setSelectedRole('member');
-        fetchMembers();
-      } else {
-        let errMessage = 'Failed to add member';
-        try {
-          const errJson = await res.json();
-          errMessage = errJson.error || errJson.message || errMessage;
-        } catch {
-          const errData = await res.text();
-          if (errData) errMessage = errData;
-        }
-        error(errMessage);
-      }
+      await apiPost(`/api/projects/${project.id}/members`, { userId: selectedUserId, role: selectedRole });
+      setSelectedUserId('');
+      setSelectedRole('member');
+      fetchMembers();
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to add member';
+      alert(`Failed to add member: ${message}`);
       console.error(err);
     } finally {
       setAdding(false);
@@ -77,16 +55,8 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
 
   const handleUpdateRole = async (userId: string, newRole: string) => {
     try {
-      const res = await apiFetchRaw(`/api/projects/${project.id}/members`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ userId, role: newRole })
-      });
-      if (res.ok) {
-        fetchMembers();
-      }
+      await apiPost(`/api/projects/${project.id}/members`, { userId, role: newRole });
+      fetchMembers();
     } catch (err) {
       console.error(err);
     }
@@ -95,20 +65,15 @@ export default function ProjectMembersModal({ project, allUsers, onClose }: Prop
   const handleRemoveMember = async (userId: string) => {
 
     try {
-      const res = await apiFetchRaw(`/api/projects/${project.id}/members/${userId}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        fetchMembers();
-      }
+      await apiDelete(`/api/projects/${project.id}/members/${userId}`);
+      fetchMembers();
     } catch(err) {
       console.error(err);
     }
   };
 
   const currentUserMember = members.find(m => m.id === currentUser?.id);
-  const canManage = can('manage_projects') || currentUser?.id === project.ownerId || currentUserMember?.role === 'admin';
+  const canManage = currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.id === project.ownerId || currentUserMember?.role === 'admin';
 
   const nonMembers = allUsers.filter(u => !members.find(m => m.id === u.id) && u.id !== project.ownerId);
 

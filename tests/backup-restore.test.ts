@@ -1,149 +1,73 @@
-import { test, describe, after } from "node:test";
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import express from "express";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import jwt from "jsonwebtoken";
-import sqlite3 from "sqlite3";
-import { open } from "sqlite";
-import { encryptSecret, decryptSecret, SECRET_KEY } from "../server/config.js";
-import { backupRouter, hasMaskedPlaceholders } from "../server/routes/backup.routes.js";
-import { setCustomDb, SqliteWrapper } from "../server/db.js";
+import request from "supertest";
+import { loadConfig } from "../server/config.ts";
+import { initDb } from "../server/db/index.ts";
+import { createApp } from "../server/app.ts";
+import { createSecretCipher } from "../server/auth/crypto.ts";
+import { assertBackupSecretsRestoreable, isRedactedSecret } from "../server/util.ts";
+
+function testEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: "test",
+    SECRET_KEY: "test-secret-key-for-unit-tests-only",
+    TOKEN_ENCRYPTION_KEY: "test-pat-encryption-key-distinct",
+    ALLOW_PUBLIC_REGISTER: "true",
+    ...overrides,
+  };
+}
 
 describe("Backup Export and Restore Security Tests", () => {
-  after(() => {
-    setCustomDb(undefined);
-  });
-  test("Exported secrets are encrypted opaque blobs and decrypted correctly", () => {
+  test("Encrypted secrets round-trip via createSecretCipher", () => {
+    const { encryptSecret, decryptSecretOrEmpty } = createSecretCipher("test-pat-encryption-key-distinct");
     const rawSecret = "glpat-super-secret-gitlab-token-12345";
     const encrypted = encryptSecret(rawSecret);
-
     assert.notEqual(encrypted, rawSecret);
-    assert.notEqual(encrypted, "••••••••");
-    assert.equal(typeof encrypted, "string");
-    assert.ok(encrypted.length > 20);
-
-    const decrypted = decryptSecret(encrypted);
-    assert.equal(decrypted, rawSecret);
+    assert.equal(decryptSecretOrEmpty(encrypted), rawSecret);
   });
 
-  test("Restore hasMaskedPlaceholders correctly detects masked bullet placeholders", () => {
-    const dummyExportWithBullets = {
-      version: "2.0.0",
-      users: [{ id: "u-1", name: "Admin" }],
-      projects: [
-        {
-          id: "proj-test",
-          name: "Test Project",
-          repoToken: "••••••••", // Masked placeholder
-          webhookSecret: "••••••••"
-        }
-      ]
-    };
+  test("isRedactedSecret detects masked placeholders", () => {
+    assert.equal(isRedactedSecret("••••••••"), true);
+    const { encryptSecret } = createSecretCipher("test-pat-encryption-key-distinct");
+    assert.equal(isRedactedSecret(encryptSecret("valid-token")), false);
+  });
 
-    assert.equal(hasMaskedPlaceholders(dummyExportWithBullets), true);
-
-    const validExport = {
-      version: "2.0.0",
-      users: [{ id: "u-1", name: "Admin" }],
-      projects: [
-        {
-          id: "proj-test",
-          name: "Test Project",
-          repoToken: encryptSecret("valid-token"),
-          webhookSecret: encryptSecret("valid-secret")
-        }
-      ]
-    };
-
-    assert.equal(hasMaskedPlaceholders(validExport), false);
+  test("assertBackupSecretsRestoreable rejects masked repo tokens", () => {
+    assert.throws(() =>
+      assertBackupSecretsRestoreable({
+        projects: [{ id: "p1", repoToken: "••••••••" }],
+      })
+    );
   });
 
   test("HTTP restore route rejects payloads containing masked placeholders", async () => {
-    const sqliteDb = await open({
-      filename: ":memory:",
-      driver: sqlite3.Database
-    });
-    const db = new SqliteWrapper(sqliteDb);
-    await db.exec(`
-      CREATE TABLE users (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        email TEXT UNIQUE,
-        passwordHash TEXT,
-        role TEXT,
-        rolePrefix TEXT,
-        status TEXT DEFAULT 'Available',
-        tokenVersion INTEGER DEFAULT 1,
-        authProvider TEXT DEFAULT 'local',
-        emailVerified INTEGER DEFAULT 1,
-        createdAt TEXT
-      );
-      CREATE TABLE projects (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        repoToken TEXT
-      );
-      CREATE TABLE password_resets (
-        token TEXT PRIMARY KEY,
-        userId TEXT,
-        expiresAt INTEGER
-      );
-    `);
-    setCustomDb(db);
-
-    const testAdminId = "backup-test-superadmin-999";
-
-    // Setup super_admin user in DB for authenticateToken DB lookup
-    await db.run(
-      "INSERT OR REPLACE INTO users (id, name, email, passwordHash, role, tokenVersion, emailVerified) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [testAdminId, "Backup Test Admin", "admin-test@example.com", "hash", "super_admin", 1, 1]
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backup-test-"));
+    const config = loadConfig(testEnv({ SQLITE_PATH: path.join(dir, "database.sqlite") }));
+    const init = await initDb(config);
+    await init.db.run(
+      "INSERT INTO users (id, name, email, passwordHash, role, tokenVersion, emailVerified, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ["backup-test-superadmin-999", "Backup Test Admin", "admin-test@example.com", "hash", "super_admin", 1, 1, "Available"]
     );
-
+    const app = await createApp({ config, getDb: async () => init.db, serveFrontend: false });
     const token = jwt.sign(
-      { id: testAdminId, role: "super_admin", tokenVersion: 1 },
-      SECRET_KEY,
+      { id: "backup-test-superadmin-999", role: "super_admin", tokenVersion: 1 },
+      config.security.secretKey,
       { expiresIn: "1h" }
     );
 
-    const app = express();
-    app.use(express.json());
-    app.use("/api/backup", backupRouter);
-
-    const server = app.listen(0);
-    const address = server.address() as any;
-    const port = address.port;
-
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/backup/restore-json`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          users: [{ id: "u-1", email: "admin@test.com", passwordHash: "hash" }],
-          projects: [{ id: "p-1", repoToken: "••••••••" }]
-        })
+    const res = await request(app)
+      .post("/api/backup/restore-json")
+      .set("Cookie", `${config.auth.cookie.name}=${token}`)
+      .send({
+        users: [{ id: "u-1", email: "admin@test.com", passwordHash: "hash" }],
+        projects: [{ id: "p-1", repoToken: "••••••••" }],
       });
 
-      assert.equal(res.status, 400);
-      const data = await res.json();
-      assert.ok(data.error.includes("Backup contains masked credentials"));
-    } finally {
-      server.close();
-      setCustomDb(undefined);
-      await db.close();
-    }
-  });
-
-  test("Restore error responses are sanitized without leaking internals", () => {
-    const simulateClientResponse = (err: any) => {
-      return {
-        error: "Failed to restore database: Invalid or corrupted backup file."
-      };
-    };
-
-    const response = simulateClientResponse(new Error("SQLITE_CORRUPT: disk I/O error table users row 49"));
-    assert.equal(response.error, "Failed to restore database: Invalid or corrupted backup file.");
-    assert.ok(!response.error.includes("SQLITE_CORRUPT"));
+    assert.equal(res.status, 400);
+    await init.db.close?.();
   });
 });

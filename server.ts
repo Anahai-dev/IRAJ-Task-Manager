@@ -1,295 +1,184 @@
-// AI Studio Editor Sync
-// Modular Architecture - Express Backend
 import "dotenv/config";
-import { isIP } from "node:net";
-import express from "express";
-import path from "path";
-import fs from "fs";
-import crypto from "crypto";
-import { createServer as createViteServer } from "vite";
-import helmet from "helmet";
-import compression from "compression";
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
-import morgan from "morgan";
-import cookieParser from "cookie-parser";
+import { loadConfig } from "./server/config.ts";
+import { initDb, purgeStaleUnverifiedUsers } from "./server/db/index.ts";
+import { createApp } from "./server/app.ts";
+import { v4 as uuidv4 } from "uuid";
+import { mapPrStatusToBoardColumn } from "./server/util.ts";
+import { getGithubPullRequest } from "./server/git/github.ts";
+import { getGitlabMergeRequest } from "./server/git/gitlab.ts";
+import { setGitApiConfig, gitApiConfigFromApp } from "./server/git/runtime-config.ts";
+import type { DatabaseWrapper } from "./server/types.ts";
+import type { AppConfig } from "./server/config.ts";
 
-import { PORT, HOST } from "./server/config.js";
-import { dbPromise } from "./server/db.js";
-import { authRouter } from "./server/routes/auth.routes.js";
-import { usersRouter } from "./server/routes/users.routes.js";
-import { tasksRouter } from "./server/routes/tasks.routes.js";
-import { projectsRouter } from "./server/routes/projects.routes.js";
-import { documentsRouter } from "./server/routes/documents.routes.js";
-import { backupRouter } from "./server/routes/backup.routes.js";
-import { eventsRouter } from "./server/routes/events.routes.js";
-import { webhooksRouter } from "./server/routes/webhooks.routes.js";
-import { startBackgroundJobs } from "./server/services/sync.service.js";
-
-const app = express();
-// Safely configure reverse proxy trust.
-// Default to "loopback" to prevent peer containers on private Docker/VPC networks from spoofing X-Forwarded-For headers.
-// In production behind specific reverse proxies, configure TRUST_PROXY (e.g. "1", CIDR, or specific IP).
-const rawTrust = process.env.TRUST_PROXY?.trim();
-const trustProxyConfig: boolean | number | string = !rawTrust
-  ? "loopback"
-  : /^\d+$/.test(rawTrust)
-  ? parseInt(rawTrust, 10)
-  : rawTrust.toLowerCase() === "true"
-  ? true
-  : rawTrust.toLowerCase() === "false"
-  ? false
-  : rawTrust;
-
-if (trustProxyConfig === true) {
-  console.warn(
-    "[SECURITY WARNING] TRUST_PROXY is set to 'true'. This blindly trusts all upstream hops and allows client IP spoofing via X-Forwarded-For. In production, configure an exact hop count (e.g. '1') or trusted proxy CIDR."
-  );
-} else if (typeof trustProxyConfig === "number" && trustProxyConfig > 10) {
-  console.warn(
-    `[SECURITY WARNING] TRUST_PROXY hop count (${trustProxyConfig}) is unusually high (>10). Excessive hop counts allow upstream peers to spoof X-Forwarded-For.`
-  );
-}
-
-app.set("trust proxy", trustProxyConfig);
-
-// Request logging
-app.use(morgan("dev"));
-
-// Attach CSP nonce to res.locals for HTML script tags
-app.use((req: any, res: any, next: any) => {
-  res.locals.cspNonce = crypto.randomBytes(16).toString("base64");
-  next();
-});
-
-// Basic security headers
-const gitlabOrigin =
-  process.env.GITLAB_URL && /^https?:\/\//i.test(process.env.GITLAB_URL)
-    ? new URL(process.env.GITLAB_URL).origin
-    : null;
-
-const cspImgSrc = [
-  "'self'",
-  "data:",
-  "blob:",
-  "https://*.githubusercontent.com",
-  "https://*.googleusercontent.com",
-  "https://gitlab.com",
-  "https://*.gitlab.com",
-  "https://secure.gravatar.com"
-];
-if (gitlabOrigin && !cspImgSrc.includes(gitlabOrigin)) {
-  cspImgSrc.push(gitlabOrigin);
-}
-
-const cspConnectSrc = [
-  "'self'",
-  "https://github.com",
-  "https://api.github.com",
-  "https://gitlab.com",
-  "https://*.gitlab.com",
-  "https://www.googleapis.com",
-  "https://*.googleapis.com"
-];
-if (gitlabOrigin && !cspConnectSrc.includes(gitlabOrigin)) {
-  cspConnectSrc.push(gitlabOrigin);
-}
-
-app.use(
-  helmet({
-    contentSecurityPolicy:
-      process.env.NODE_ENV === "production"
-        ? {
-            directives: {
-              defaultSrc: ["'self'"],
-              scriptSrc: ["'self'", (req: any, res: any) => `'nonce-${res.locals.cspNonce}'`],
-              styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-              fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
-              imgSrc: cspImgSrc,
-              connectSrc: cspConnectSrc,
-              frameSrc: ["'self'"]
-            }
-          }
-        : false,
-    crossOriginEmbedderPolicy: false
-  })
-);
-
-// Compress responses
-app.use(compression());
-
-const getSafeClientIp = (req: any): string => {
-  let clientIp = typeof req.ip === "string" ? req.ip.trim() : "";
-  // If req.ip is absent or malformed (e.g. octal prefixes like 010.1.1.1 or CIDR notation like 203.0.113.7/24),
-  // fall back to the actual peer socket address
-  if (!clientIp || isIP(clientIp) === 0) {
-    const socketAddr = req.socket?.remoteAddress;
-    clientIp = typeof socketAddr === "string" && isIP(socketAddr) !== 0 ? socketAddr : "127.0.0.1";
-  }
-  return ipKeyGenerator(clientIp, 64);
-};
-
-// General API Rate Limiter (runs before body parsers to reject floods without buffering large payloads)
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per 15 minutes
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req: any) => getSafeClientIp(req),
-  validate: { xForwardedForHeader: false },
-  message: { error: "Too many requests, please try again after 15 minutes" }
-});
-
-// Apply rate limiting to API routes
-app.use("/api/", apiLimiter);
-
-// Inbound webhook body parser with rawBody buffer capture (MUST run before global JSON parser)
-app.use(
-  ["/api/webhooks", "/api/webhooks/*"],
-  express.json({
-    limit: "5mb",
-    verify: (req: any, _res, buf) => {
-      req.rawBody = buf;
-    }
-  })
-);
-
-// Standard lightweight body parser (1MB payload limit, no wasteful rawBody buffer retention on general API calls)
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true, limit: "1mb" }));
-app.use(cookieParser());
-
-// Two-tier Auth Rate Limiting for credential endpoints:
-// Tier 1: Strict per-IP rate limiter (with skipSuccessfulRequests so office/NAT valid logins don't exhaust shared budget)
-const authIpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // 30 failed credential attempts per 15 minutes per IP
-  skipSuccessfulRequests: true, // Successful logins do not consume quota
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req: any) => getSafeClientIp(req),
-  validate: { xForwardedForHeader: false },
-  message: { error: "Too many authentication attempts from this IP address. Please try again after 15 minutes." }
-});
-
-// Tier 2: Strict per-Account rate limiter with skipSuccessfulRequests to prevent targeted account DoS
-const authAccountLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 failed attempts per 15 minutes per account
-  skipSuccessfulRequests: true, // Successful logins do not consume quota
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req: any) => {
-    const identifier =
-      typeof req.body?.email === "string"
-        ? req.body.email.toLowerCase().trim().slice(0, 100)
-        : typeof req.body?.username === "string"
-        ? req.body.username.toLowerCase().trim().slice(0, 100)
-        : "";
-    return identifier || getSafeClientIp(req);
-  },
-  validate: { xForwardedForHeader: false },
-  message: { error: "Too many failed authentication attempts for this account. Please try again after 15 minutes." }
-});
-
-// Apply specifically to credential submitting endpoints, NOT to /me, /logout, or OAuth redirect handlers
-app.use(
-  [
-    "/api/auth/login",
-    "/api/auth/register",
-    "/api/auth/forgot-password",
-    "/api/auth/reset-password"
-  ],
-  authIpLimiter,
-  authAccountLimiter
-);
-
-/* --- MODULAR API ROUTERS --- */
-app.get("/api/health", async (_req, res) => {
+async function runBackgroundPrSync(getDb: () => Promise<DatabaseWrapper>, decryptSecret: (t: string) => string) {
+  console.log("[Background Sync] Starting automatic pull request sync...");
   try {
-    const db = await dbPromise;
-    await db.get("SELECT 1");
-    res.json({ status: "ok", database: "connected" });
-  } catch (err: any) {
-    console.error("Health readiness check failed:", err);
-    res.status(503).json({ status: "error", error: "Database unreachable" });
+    const db = await getDb();
+    const projects = await db.all<Record<string, unknown>>(
+      "SELECT * FROM projects WHERE repoOwner IS NOT NULL AND repoName IS NOT NULL AND repoToken IS NOT NULL"
+    );
+    if (!projects || projects.length === 0) {
+      console.log("[Background Sync] No projects configured with Git. Skipping.");
+      return;
+    }
+
+    for (const project of projects) {
+      const provider = String(project.repoProvider || "github");
+      const owner = String(project.repoOwner);
+      const name = String(project.repoName);
+      const token = decryptSecret(String(project.repoToken || ""));
+
+      const tasks = await db.all<Record<string, unknown>>(
+        "SELECT id, title, prUrl, prStatus, status FROM tasks WHERE projectId = ? AND prUrl IS NOT NULL AND prUrl != '' AND prStatus != 'merged' AND prStatus != 'closed'",
+        [project.id]
+      );
+      if (!tasks || tasks.length === 0) continue;
+
+      for (const task of tasks) {
+        try {
+          let prNumber: string | null = null;
+          const prUrl = String(task.prUrl || "");
+          if (provider === "github") {
+            const match = prUrl.match(/\/pull\/(\d+)/);
+            if (match) prNumber = match[1];
+          } else if (provider === "gitlab") {
+            const match = prUrl.match(/\/merge_requests\/(\d+)/);
+            if (match) prNumber = match[1];
+          }
+          if (!prNumber) continue;
+
+          let remotePrStatus = String(task.prStatus || "open");
+          if (provider === "github") {
+            const gh = await getGithubPullRequest({ owner, name, token, prNumber });
+            if (gh) remotePrStatus = gh.status;
+          } else if (provider === "gitlab") {
+            const gl = await getGitlabMergeRequest({ owner, name, token, mrNumber: prNumber });
+            if (gl) remotePrStatus = gl.status;
+          }
+
+          if (remotePrStatus !== task.prStatus) {
+            const nextTaskStatus = await mapPrStatusToBoardColumn(
+              db,
+              String(project.id),
+              String(task.status),
+              remotePrStatus
+            );
+            if (nextTaskStatus !== null) {
+              await db.run("UPDATE tasks SET prStatus = ?, status = ? WHERE id = ?", [
+                remotePrStatus,
+                nextTaskStatus,
+                task.id,
+              ]);
+            } else {
+              await db.run("UPDATE tasks SET prStatus = ? WHERE id = ?", [remotePrStatus, task.id]);
+            }
+            const statusNote =
+              nextTaskStatus !== null
+                ? `updated PR to '${remotePrStatus}' and Board Status to '${nextTaskStatus}'`
+                : `updated PR to '${remotePrStatus}' (board status unchanged — no mapped column)`;
+            await db.run(
+              "INSERT INTO task_activities (id, taskId, userId, action, createdAt) VALUES (?, ?, ?, ?, ?)",
+              [uuidv4(), task.id, "system", `automatically synchronized PR status: ${statusNote}`, new Date().toISOString()]
+            );
+            console.log(`[Background Sync] Updated task "${task.title}" (${statusNote})`);
+          }
+        } catch (taskErr: unknown) {
+          console.error(`[Background Sync] Error syncing task ${task.id}:`, (taskErr as Error).message);
+        }
+      }
+    }
+  } catch (err: unknown) {
+    console.error("[Background Sync] Error running background PR sync:", (err as Error).message);
   }
-});
+}
 
-app.use("/api/auth", authRouter);
-app.use("/api", usersRouter);
-app.use("/api/tasks", tasksRouter);
-app.use("/api", projectsRouter);
-app.use("/api", documentsRouter);
-app.use("/api/backup", backupRouter);
-app.use("/api", eventsRouter);
-app.use("/api", webhooksRouter);
+function scheduleBackgroundJobs(config: AppConfig, getDb: () => Promise<DatabaseWrapper>, decryptSecret: (t: string) => string) {
+  const intervals: NodeJS.Timeout[] = [];
 
-// Catch-all 404 handler for unmatched API routes (prevents fallthrough to SPA HTML)
-app.all(["/api", "/api/*"], (_req, res) => {
-  res.status(404).json({ error: "API endpoint not found" });
-});
+  if (config.git.enabled) {
+    intervals.push(
+      setInterval(() => {
+        void runBackgroundPrSync(getDb, decryptSecret);
+      }, config.git.prSyncIntervalMs)
+    );
+    setTimeout(() => {
+      void runBackgroundPrSync(getDb, decryptSecret);
+    }, config.git.prSyncInitialDelayMs);
+  }
+
+  intervals.push(
+    setInterval(() => {
+      void (async () => {
+        try {
+          const db = await getDb();
+          await purgeStaleUnverifiedUsers(db, config.db.purgeUnverifiedUsersAfterMs);
+          const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+          await db.run("DELETE FROM notifications WHERE createdAt < ?", [thirtyDaysAgo]);
+          const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+          await db.run("DELETE FROM webhook_deliveries WHERE createdAt < ?", [fourteenDaysAgo]);
+        } catch (e) {
+          console.error("Failed to purge unverified users:", e);
+        }
+      })();
+    }, config.db.purgeUnverifiedUsersIntervalMs)
+  );
+
+  intervals.push(
+    setInterval(() => {
+      void (async () => {
+        try {
+          const db = await getDb();
+          await db.run("DELETE FROM oauth_nonces WHERE timestamp < ?", Date.now() - config.oauth.nonceRetentionMs);
+        } catch (e) {
+          console.error("Failed to purge OAuth nonces:", e);
+        }
+      })();
+    }, config.oauth.noncePurgeIntervalMs)
+  );
+
+  return intervals;
+}
 
 async function startServer() {
-  // Ensure database initialization begins
-  await dbPromise;
+  const config = loadConfig();
+  setGitApiConfig(gitApiConfigFromApp(config));
+  const init = await initDb(config);
+  const dbPromise = Promise.resolve(init.db);
+  const getDb = () => dbPromise;
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa"
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath, { index: false }));
-    app.get("*", (req, res) => {
-      const indexPath = path.join(distPath, "index.html");
-      try {
-        if (fs.existsSync(indexPath)) {
-          let html = fs.readFileSync(indexPath, "utf8");
-          const nonce = res.locals.cspNonce || "";
-          html = html.replace(/<script(?![^>]*\bnonce=)/gi, `<script nonce="${nonce}"`);
-          res.setHeader("Content-Type", "text/html; charset=utf-8");
-          return res.send(html);
-        }
-      } catch (err) {
-        console.error("Error serving index.html with CSP nonce:", err);
-      }
-      res.sendFile(indexPath);
-    });
-  }
+  const app = await createApp({ config, getDb, serveFrontend: true });
 
-  // Global Error Handler
-  app.use((err: any, req: any, res: any, next: any) => {
-    console.error("Unhandled error:", err);
-    res.status(500).json({ error: "Internal Server Error" });
+  const { decryptSecretOrEmpty } = (await import("./server/auth/crypto.ts")).createSecretCipher(
+    config.security.tokenEncryptionKey
+  );
+
+  const server = app.listen(config.http.port, config.http.host, () => {
+    console.log(`Server running on http://${config.http.host}:${config.http.port}`);
   });
 
-  const server = app.listen(PORT, HOST, () => {
-    console.log(`Server running on http://${HOST}:${PORT}`);
-  });
+  const intervals = scheduleBackgroundJobs(config, getDb, decryptSecretOrEmpty);
 
-  // Start background sync and cleanup jobs
-  const stopBackgroundJobs = startBackgroundJobs();
-
-  // Graceful shutdown
   const shutdown = () => {
     console.log("Shutting down gracefully...");
-    stopBackgroundJobs();
+    for (const interval of intervals) {
+      clearInterval(interval);
+    }
     server.close(() => {
       console.log("Closed out remaining connections.");
+      void init.db.close?.();
       process.exit(0);
     });
-
     setTimeout(() => {
       console.error("Could not close connections in time, forcefully shutting down");
       process.exit(1);
-    }, 10000);
+    }, config.http.shutdownTimeoutMs);
   };
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("FATAL: failed to start server:", err);
+  process.exit(1);
+});

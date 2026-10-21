@@ -9,7 +9,7 @@ Welcome to the official documentation for **DevTeam Task Manager**. This guide p
 1. [🚀 Getting Started & Authentication](01-getting-started.md)
    - Account Registration & Login
    - Multi-Provider OAuth Setup (Google, GitHub, GitLab)
-   - Role-Based Access Control (Admin, Manager, Member)
+   - Role-Based Access Control (super_admin, admin, manager, developer, …)
    - UI Layout, Sidebar Navigation & Theme Options
 
 2. [📋 Project & Board Management](02-project-and-board-management.md)
@@ -50,10 +50,15 @@ Welcome to the official documentation for **DevTeam Task Manager**. This guide p
    - Command Line Interface (`db-cli.ts`) for Binary & JSON Exports
    - VPS & Docker Hosting Instructions
 
+9. [⚙️ Configuration Reference](09-configuration.md)
+   - Index of all `server/config.ts` environment keys
+   - Defaults that affect auth, git, pagination, and backups
+
 ---
 
 ## 💡 Quick Start Reference
 
-- **Development Server**: `npm run dev` (Runs backend API & frontend SPA on port `3000`)
+- **Development Server**: `npm run dev` (API + SPA on port `3000`)
 - **Production Build**: `npm run build && npm start`
-- **CLI Database Tools**: `npm run db-cli stats`
+- **Tests & CI**: `npm test`, `npm run lint` (see `.github/workflows/ci.yml`)
+- **CLI Database Tools**: `npm run db-cli status`

@@ -1,7 +1,7 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { LayoutDashboard } from 'lucide-react';
+import { apiPost } from '../lib/api';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -18,14 +18,10 @@ export default function ForgotPassword() {
       setDevTokenLink('');
       setLoading(true);
 
-      const res = await apiFetchRaw('/api/auth/forgot-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to request reset');
+      const data = await apiPost<{ error?: string; message: string; resetLink?: string }>(
+        '/api/auth/forgot-password',
+        { email }
+      );
 
       setSuccessMsg(data.message);
       if (data.resetLink) setDevTokenLink(data.resetLink); // Show for dev purposes

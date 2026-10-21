@@ -1,16 +1,16 @@
-import { apiFetchRaw } from "../lib/api";
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useSearchParams, Link, Navigate } from 'react-router';
 import { FolderKanban, FileText, Plus, ChevronLeft, Save, Trash2, Edit3, X, Download, Printer } from 'lucide-react';
 import { Project, Document } from '../types';
 import { safeFormatDate } from '../lib/utils';
-import Markdown from 'react-markdown';
+import SafeMarkdown from '../components/SafeMarkdown';
 import MDEditor from '@uiw/react-md-editor';
 import { EmptyState } from '../components/EmptyState';
+import { apiDelete, apiGet, apiPost, apiPut, fetchAllPages } from '../lib/api';
 
 export default function Documents() {
-  const { isAuthenticated } = useAuth();
+  const { token } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get('projectId');
   const documentId = searchParams.get('documentId');
@@ -27,25 +27,20 @@ export default function Documents() {
 
   useEffect(() => {
     fetchProjects();
-  }, [isAuthenticated]);
+  }, [token]);
 
   useEffect(() => {
     if (projectId) {
       fetchDocuments();
     }
-  }, [projectId, isAuthenticated]);
+  }, [projectId, token]);
 
   const fetchProjects = async () => {
     try {
-      const res = await apiFetchRaw('/api/projects', {
-        headers: { }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAllProjects(data);
-        if (projectId) {
-          setProject(data.find((p: Project) => p.id === projectId) || null);
-        }
+      const data = await fetchAllPages<Project>('/api/projects');
+      setAllProjects(data);
+      if (projectId) {
+        setProject(data.find((p: Project) => p.id === projectId) || null);
       }
     } catch (err) {
       console.error(err);
@@ -56,12 +51,8 @@ export default function Documents() {
 
   const fetchDocuments = async () => {
     try {
-      const res = await apiFetchRaw(`/api/projects/${projectId}/documents`, {
-        headers: { }
-      });
-      if (res.ok) {
-        setDocuments(await res.json());
-      }
+      const data = await apiGet<Document[]>(`/api/projects/${projectId}/documents`);
+      setDocuments(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -106,27 +97,15 @@ export default function Documents() {
 
   const handleSave = async () => {
     try {
-      const method = documentId && documentId !== 'new' ? 'PUT' : 'POST';
-      const url = documentId && documentId !== 'new' 
-        ? `/api/documents/${documentId}` 
-        : `/api/projects/${projectId}/documents`;
-        
-      const res = await apiFetchRaw(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ title: editTitle, content: editContent })
-      });
-      
-      if (res.ok) {
-        const savedDoc = await res.json();
-        await fetchDocuments();
-        setIsEditing(false);
-        // update url to point to new doc
-        if (!documentId || documentId === 'new') {
-          setSearchParams({ projectId: projectId || '', documentId: savedDoc.id });
-        }
+      const payload = { title: editTitle, content: editContent };
+      const savedDoc = documentId && documentId !== 'new'
+        ? await apiPut<Document>(`/api/documents/${documentId}`, payload)
+        : await apiPost<Document>(`/api/projects/${projectId}/documents`, payload);
+
+      await fetchDocuments();
+      setIsEditing(false);
+      if (!documentId || documentId === 'new') {
+        setSearchParams({ projectId: projectId || '', documentId: savedDoc.id });
       }
     } catch (err) {
       console.error("Failed to save document", err);
@@ -137,16 +116,11 @@ export default function Documents() {
     e.preventDefault();
     e.stopPropagation();
     try {
-      const res = await apiFetchRaw(`/api/documents/${id}`, {
-        method: 'DELETE',
-        headers: { }
-      });
-      if (res.ok) {
-        if (documentId === id) {
-          setSearchParams({ projectId: projectId || '' });
-        }
-        fetchDocuments();
+      await apiDelete(`/api/documents/${id}`);
+      if (documentId === id) {
+        setSearchParams({ projectId: projectId || '' });
       }
+      fetchDocuments();
     } catch (err) {
       console.error(err);
     }
@@ -366,7 +340,7 @@ export default function Documents() {
                 </div>
                 
                 <div className="prose dark:prose-invert prose-blue max-w-none text-sm text-subtle leading-relaxed">
-                  <Markdown skipHtml={true}>{selectedDocument.content}</Markdown>
+                  <SafeMarkdown>{selectedDocument.content}</SafeMarkdown>
                 </div>
               </div>
             )}
