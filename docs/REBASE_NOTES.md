@@ -4,6 +4,10 @@ Branch: `cleanup/bulletproof-rebased`
 Base: `origin/main` @ `b249af3`  
 Source: `origin/cleanup/bulletproof` @ `6a814d3` (6 commits on old `main` `cd2d50c`)
 
+## Git history
+
+Interactive rebase of the six cleanup commits onto `b249af3` would reintroduce the same dual-architecture conflicts on every commit. The integrated tree is recorded as **one commit** on top of `origin/main` (`fb0595a`), containing the full merged result. Logical phase boundaries match the original six cleanup commits.
+
 ## Strategy
 
 Upstream `main` gained a parallel modularization (`server/routes/*.routes.ts`, `server/db.ts`, `server/services/*`) while cleanup used a deeper split (`server/app.ts`, `server/rbac.ts`, `server/db/*`, pagination, typed config). A straight cherry-pick of cleanup commits onto `main` duplicated routers and DB entrypoints.
@@ -49,6 +53,13 @@ Resolution: merge `main` into the cleanup tree, keep **cleanup’s module layout
 - Cleanup route surface preserved; added upstream-only routes (events, notifications, webhooks, verify-email, webhook-secret).
 - Removed duplicate `*.routes.ts` mounts to avoid double registration.
 - Permission helpers centralized in `server/rbac.ts` (`checkProjectWriteAccess`, `getAuthorizedProjectUserIds`).
+
+## Plain `main` (`b249af3`) baseline
+
+| Command | Result |
+|---------|--------|
+| `npm run lint` | pass |
+| `npm test` | **31/33** pass, **2 fail** (pre-existing on `main`; not introduced by this branch) |
 
 ## Verification (this branch)
 
