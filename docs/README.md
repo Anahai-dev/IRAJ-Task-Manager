@@ -50,6 +50,11 @@ Welcome to the official documentation for **DevTeam Task Manager**. This guide p
    - Command Line Interface (`db-cli.ts`) for Binary & JSON Exports
    - VPS & Docker Hosting Instructions
 
+9. [🗺️ Codebase Problem Map](CODEBASE_PROBLEM_MAP.md) *(engineering)*
+   - Evidence-based audit of architecture, security, data layer, tests, and production readiness
+   - Severity-ranked issues (P0–P3) and recommended cleanup sequence for a later hardening pass
+   - Not an end-user operations guide — use this before refactors, MCP work, or a “bulletproof” rewrite
+
 ---
 
 ## 💡 Quick Start Reference
